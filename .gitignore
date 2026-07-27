@@ -1,0 +1,30 @@
+# Node
+node_modules/
+dist/
+*.log
+
+# Local database (reference server)
+*.db
+*.db-shm
+*.db-wal
+server/project-console.db*
+
+# Env / secrets
+.env
+.env.local
+*.pem
+*.keystore
+*.jks
+google-services.json
+serviceAccount*.json
+
+# Android build output (skeleton is source-only)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+
+# OS
+.DS_Store

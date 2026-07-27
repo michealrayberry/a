@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Micheal Ray Berry Public Accountability Project — Public Record</title>
+<style>
+  :root {
+    --ink: #111418; --paper: #ffffff; --muted: #5b6470; --line: #e2e6ea;
+    --accent: #1f4b8f; --bg: #f6f7f9;
+    --ok: #1f6b3a; --pend: #8a6d00; --warn: #8a3b00; --bad: #8a1f1f;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: var(--sans); color: var(--ink); background: var(--bg); line-height: 1.5; }
+  header { background: var(--ink); color: #fff; padding: 20px 16px; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 16px; }
+  header .wrap { padding: 0; }
+  .eyebrow { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: #9aa4b1; }
+  h1 { font-size: 20px; margin: 4px 0 2px; font-weight: 650; }
+  .domain { color: #9aa4b1; font-size: 13px; }
+  main { padding: 20px 0 60px; }
+  section { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin: 14px 0; }
+  h2 { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 14px; }
+  .stat .label { font-size: 12px; color: var(--muted); }
+  .stat .num { font-family: var(--mono); font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat .sub { font-size: 12px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  td.num, th.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+  .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+  .badge::before { content: attr(data-icon); }
+  .b-COMPLETE { color: var(--ok); } .b-PENDING_REVIEW, .b-OPEN { color: var(--pend); }
+  .b-DEFICIENT, .b-MISSED { color: var(--bad); } .b-LATE { color: var(--warn); }
+  a { color: var(--accent); }
+  .foot { color: var(--muted); font-size: 12px; text-align: center; margin-top: 24px; }
+  .empty { color: var(--muted); font-size: 14px; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <div class="eyebrow">Public Accountability Record</div>
+  <h1 id="proj-name">Micheal Ray Berry Public Accountability Project</h1>
+  <div class="domain" id="proj-domain">michealrayberry.com</div>
+</div></header>
+
+<main class="wrap">
+  <section id="status">
+    <h2>Current Status</h2>
+    <div class="grid" id="status-grid"><div class="empty">Loading…</div></div>
+    <div class="note" id="status-updated"></div>
+  </section>
+
+  <section>
+    <h2>Verified Weight History</h2>
+    <div id="weights"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Daily Archive</h2>
+    <div id="days"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Published Violation Notices</h2>
+    <div id="violations"><div class="empty">Loading…</div></div>
+  </section>
+
+  <div class="foot">
+    Read-only public record. Private evidence and administrative notes are not published here.
+    Served by the Project Console public API.
+  </div>
+</main>
+
+<script>
+const q = new URLSearchParams(location.search);
+const slug = q.get('slug') || 'micheal-ray-berry';
+const api = (p) => fetch(`/public/${p}${p.includes('?') ? '&' : '?'}slug=${slug}`).then(r => r.ok ? r.json() : null);
+const icon = { COMPLETE:'✓', PENDING_REVIEW:'…', OPEN:'○', DEFICIENT:'!', MISSED:'✕', LATE:'▲' };
+const badge = (s) => `<span class="badge b-${s}" data-icon="${icon[s]||'•'}">${(s||'').replace(/_/g,' ')}</span>`;
+const fmtDate = (d) => d ? new Date(d).toLocaleString() : '—';
+
+(async () => {
+  const proj = await api('project');
+  if (proj) { document.getElementById('proj-name').textContent = proj.name;
+    document.getElementById('proj-domain').textContent = proj.domain; }
+
+  const s = await api('status');
+  const grid = document.getElementById('status-grid');
+  if (s) {
+    const stat = (label, num, sub='') =>
+      `<div class="stat"><div class="label">${label}</div><div class="num">${num}</div><div class="sub">${sub}</div></div>`;
+    grid.innerHTML =
+      stat('Current verified', s.currentVerifiedWeight ?? '—', s.unit || '') +
+      stat('Start', s.startWeight ?? '—', s.unit || '') +
+      stat('Goal', s.goalWeight ?? '—', s.unit || '') +
+      stat('Total change', s.totalVerifiedChange ?? '—', s.unit || '') +
+      stat('Project day', s.currentProjectDay ?? '—') +
+      `<div class="stat"><div class="label">Latest day</div><div>${s.latestDayStatus ? badge(s.latestDayStatus) : '—'}</div></div>`;
+    document.getElementById('status-updated').textContent = 'Last updated: ' + fmtDate(s.lastUpdated);
+  } else { grid.innerHTML = '<div class="empty">No published status yet.</div>'; }
+
+  const w = await api('weights') || [];
+  document.getElementById('weights').innerHTML = w.length
+    ? `<table><thead><tr><th>Measured</th><th class="num">Weight</th></tr></thead><tbody>${
+        w.map(x => `<tr><td>${fmtDate(x.measuredAt)}</td><td class="num">${x.weight} ${x.unit}</td></tr>`).join('')}</tbody></table>`
+    : '<div class="empty">No verified weights have been published yet.</div>';
+
+  const days = await api('project-days') || [];
+  document.getElementById('days').innerHTML = days.length
+    ? `<table><thead><tr><th>Date</th><th class="num">Day</th><th>Status</th></tr></thead><tbody>${
+        days.map(d => `<tr><td><a href="?slug=${slug}&date=${d.localDate}">${d.localDate}</a></td><td class="num">${d.dayNumber}</td><td>${badge(d.overallStatus)}</td></tr>`).join('')}</tbody></table>`
+    : '<div class="empty">No published daily records yet.</div>';
+
+  const v = await api('violations') || [];
+  document.getElementById('violations').innerHTML = v.length
+    ? `<table><thead><tr><th class="num">#</th><th>Basis</th><th class="num">Amount</th><th>State</th></tr></thead><tbody>${
+        v.map(x => `<tr><td class="num">${x.violationNumber}</td><td>${x.factualBasis}</td><td class="num">${x.consequenceAmount ?? '—'}</td><td>${badge(x.state)}</td></tr>`).join('')}</tbody></table>`
+    : '<div class="empty">No violations have been published.</div>';
+})();
+</script>
+</body>
+</html>

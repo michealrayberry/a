@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Project Console — Accountability Partner Portal</title>
+<style>
+  :root { --ink:#111418; --paper:#fff; --muted:#5b6470; --line:#e2e6ea; --accent:#1f4b8f; --bg:#f6f7f9;
+    --ok:#1f6b3a; --pend:#8a6d00; --bad:#8a1f1f; --warn:#8a3b00;
+    --mono: ui-monospace, Menlo, Consolas, monospace; --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  * { box-sizing:border-box; } body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink);}
+  header{background:var(--ink);color:#fff;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;}
+  header h1{font-size:15px;margin:0;} header .sub{color:#9aa4b1;font-size:12px;}
+  .layout{display:flex;min-height:calc(100vh - 48px);}
+  nav{width:190px;background:#1b1f24;padding:12px 0;} nav a{display:block;color:#c4ccd6;padding:9px 20px;text-decoration:none;font-size:14px;cursor:pointer;}
+  nav a.active,nav a:hover{background:#262c33;color:#fff;} main{flex:1;padding:22px;max-width:900px;}
+  @media(max-width:640px){.layout{flex-direction:column;}nav{width:100%;display:flex;overflow-x:auto;}nav a{white-space:nowrap;}}
+  section{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:16px;}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 12px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;} th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line);}
+  th{font-size:11px;text-transform:uppercase;color:var(--muted);}
+  button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:7px 11px;font:inherit;font-size:13px;cursor:pointer;}
+  button.sec{background:#eef1f4;color:var(--ink);} button.bad{background:#8a1f1f;}
+  input,select,textarea{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;font:inherit;margin-top:3px;}
+  label{font-size:12px;color:var(--muted);display:block;margin-top:8px;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;}
+  .stat .n{font-family:var(--mono);font-size:26px;font-weight:600;} .stat .l{font-size:12px;color:var(--muted);}
+  .badge{display:inline-flex;gap:4px;font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px;border:1px solid var(--line);}
+  .hide{display:none;} .login{max-width:360px;margin:60px auto;} .msg{font-size:13px;margin-top:8px;}
+  .msg.err{color:var(--bad);} .msg.ok{color:var(--ok);} .warn{color:var(--warn);font-size:12px;}
+  pre{background:#0e1116;color:#c8d0da;padding:12px;border-radius:8px;overflow:auto;font-size:12px;max-height:420px;}
+</style>
+</head>
+<body>
+<header><div><h1>Accountability Partner Portal</h1><div class="sub">Project Console administration</div></div>
+  <div id="who" class="sub"></div></header>
+
+<div id="login" class="login">
+  <section>
+    <h2>AP sign in</h2>
+    <label>Email</label><input id="email" value="ap@michealrayberry.com" />
+    <label>Password</label><input id="password" type="password" value="ap-dev-pass" />
+    <button id="loginBtn" style="margin-top:12px">Sign in</button>
+    <div class="msg err" id="loginMsg"></div>
+  </section>
+</div>
+
+<div id="app" class="layout hide">
+  <nav>
+    <a data-tab="dashboard" class="active">Dashboard</a>
+    <a data-tab="queue">Review Queue</a>
+    <a data-tab="violations">Violations</a>
+    <a data-tab="audit">Audit Log</a>
+  </nav>
+  <main>
+    <div id="tab-dashboard">
+      <section><h2>Dashboard</h2><div class="grid" id="dash"></div></section>
+    </div>
+    <div id="tab-queue" class="hide">
+      <section><h2>Evidence Review Queue</h2><div id="queue"></div></section>
+    </div>
+    <div id="tab-violations" class="hide">
+      <section><h2>Assess Violation</h2>
+        <label>Project day id</label><input id="v-day" placeholder="day_..." />
+        <label>Violation type</label>
+        <select id="v-type"><option>MISSED_DAILY</option><option>MISSED_WEEKLY</option></select>
+        <label>Factual basis</label><textarea id="v-basis" rows="2"></textarea>
+        <label>Consequence amount (blank = use configured table)</label><input id="v-amt" type="number" />
+        <label>Override reason (only if amount differs from table)</label><input id="v-override" />
+        <button id="v-btn" style="margin-top:10px">Assess violation</button>
+        <div class="msg" id="v-msg"></div>
+      </section>
+    </div>
+    <div id="tab-audit" class="hide">
+      <section><h2>Audit Log (latest 500)</h2><button class="sec" id="audit-refresh">Refresh</button><pre id="audit"></pre></section>
+    </div>
+  </main>
+</div>
+
+<script>
+let token=null, projectId=null;
+const $=(id)=>document.getElementById(id);
+async function api(path, opts={}) {
+  const res = await fetch(path, { ...opts, headers:{'content-type':'application/json',
+    ...(token?{authorization:`Bearer ${token}`}:{}), ...(opts.headers||{})} });
+  const body = await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(body.error||res.status);
+  return body;
+}
+const badge=(s)=>`<span class="badge">${(s||'').replace(/_/g,' ')}</span>`;
+
+$('loginBtn').onclick = async () => {
+  try {
+    const r = await api('/auth/login',{method:'POST',body:JSON.stringify({email:$('email').value,password:$('password').value})});
+    token=r.token; $('who').textContent=r.user.displayName+' · AP';
+    $('login').classList.add('hide'); $('app').classList.remove('hide');
+    loadDashboard(); loadQueue();
+  } catch(e){ $('loginMsg').textContent='Sign-in failed: '+e.message; }
+};
+
+document.querySelectorAll('nav a').forEach(a => a.onclick = () => {
+  document.querySelectorAll('nav a').forEach(x=>x.classList.remove('active')); a.classList.add('active');
+  ['dashboard','queue','violations','audit'].forEach(t=>$('tab-'+t).classList.toggle('hide', t!==a.dataset.tab));
+  if(a.dataset.tab==='audit') loadAudit();
+});
+
+async function loadDashboard(){
+  const d = await api('/ap/dashboard');
+  $('dash').innerHTML = Object.entries({
+    'Awaiting review':d.awaitingReview,'Open deficiencies':d.openDeficiencies,'Open violations':d.openViolations,
+    'Late':d.lateSubmissions,'Missed':d.missed
+  }).map(([l,n])=>`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+}
+
+async function loadQueue(){
+  const items = await api('/ap/review-queue');
+  if(!items.length){ $('queue').innerHTML='<div class="sub">Nothing awaiting review.</div>'; return; }
+  projectId = items[0].projectId;
+  $('queue').innerHTML = `<table><thead><tr><th>Date</th><th>Requirement</th><th>Timeliness</th><th>Received</th><th>Actions</th></tr></thead><tbody>${
+    items.map(i=>`<tr><td>${i.localDate}</td><td>${i.requirement}</td><td>${badge(i.timeliness)}</td>
+      <td class="sub">${new Date(i.serverReceivedAt).toLocaleString()}</td>
+      <td><button onclick="verify('${i.evidenceId}')">Verify</button>
+          <button class="bad" onclick="deficiency('${i.evidenceId}','${i.requirementInstanceId}')">Deficient</button></td></tr>`).join('')}</tbody></table>`;
+}
+
+window.verify = async (id) => { try { await api(`/ap/evidence/${id}/verify`,{method:'POST',body:JSON.stringify({note:'Verified via portal'})}); loadQueue(); loadDashboard(); } catch(e){ alert(e.message);} };
+window.deficiency = async (evidenceId, requirementInstanceId) => {
+  const description = prompt('Deficiency reason (required):'); if(!description) return;
+  try { await api('/ap/deficiencies',{method:'POST',body:JSON.stringify({evidenceId,requirementInstanceId,reasonCode:'MANUAL',description,correctionWindow:'PT24H'})});
+    loadQueue(); loadDashboard(); } catch(e){ alert(e.message);} };
+
+$('v-btn').onclick = async () => {
+  try {
+    const amt = $('v-amt').value ? parseFloat($('v-amt').value) : undefined;
+    const body = { projectId, projectDayId:$('v-day').value, violationType:$('v-type').value, factualBasis:$('v-basis').value };
+    if(amt!==undefined) body.consequenceAmount = amt;
+    if($('v-override').value) body.override = { reason:$('v-override').value };
+    const r = await api('/ap/violations',{method:'POST',body:JSON.stringify(body)});
+    $('v-msg').className='msg ok'; $('v-msg').innerHTML='Violation assessed: '+r.violationId+(r.warnings?.length?'<br><span class="warn">'+r.warnings.join(' ')+'</span>':'');
+  } catch(e){ $('v-msg').className='msg err'; $('v-msg').textContent=e.message; }
+};
+
+async function loadAudit(){ const a = await api('/ap/audit'); $('audit').textContent = JSON.stringify(a, null, 2); }
+$('audit-refresh').onclick = loadAudit;
+</script>
+</body>
+</html>

@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Project Console — Participant</title>
+<style>
+  :root { --ink:#111418; --paper:#fff; --muted:#5b6470; --line:#e2e6ea; --accent:#1f4b8f; --bg:#f6f7f9;
+    --ok:#1f6b3a; --pend:#8a6d00; --bad:#8a1f1f; --warn:#8a3b00;
+    --mono: ui-monospace, Menlo, Consolas, monospace; --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  * { box-sizing:border-box; } body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink);}
+  header{background:var(--ink);color:#fff;padding:16px;} .wrap{max-width:640px;margin:0 auto;padding:16px;}
+  h1{font-size:16px;margin:0;} .sub{color:#9aa4b1;font-size:12px;}
+  section{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:16px;margin:12px 0;}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 10px;}
+  label{display:block;font-size:12px;color:var(--muted);margin:8px 0 3px;}
+  input,select{width:100%;padding:9px;border:1px solid var(--line);border-radius:7px;font:inherit;}
+  button{background:var(--accent);color:#fff;border:0;border-radius:7px;padding:10px 14px;font:inherit;font-weight:600;cursor:pointer;}
+  button.sec{background:#eef1f4;color:var(--ink);}
+  button:disabled{opacity:.5;cursor:not-allowed;}
+  .req{border:1px solid var(--line);border-radius:8px;padding:12px;margin:8px 0;}
+  .req .top{display:flex;justify-content:space-between;align-items:center;gap:8px;}
+  .req .name{font-weight:600;} .req .meta{font-size:12px;color:var(--muted);font-family:var(--mono);}
+  .badge{display:inline-flex;gap:5px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid var(--line);}
+  .b-VERIFIED{color:var(--ok);} .b-SUBMITTED,.b-UNDER_REVIEW,.b-IN_PROGRESS{color:var(--pend);}
+  .b-NOT_STARTED{color:var(--muted);} .b-DEFICIENT,.b-MISSED{color:var(--bad);} .b-LATE{color:var(--warn);}
+  .countdown{font-family:var(--mono);font-size:28px;font-weight:600;font-variant-numeric:tabular-nums;}
+  .strip{font-size:12px;color:var(--muted);} .msg{font-size:13px;margin-top:8px;min-height:18px;}
+  .msg.err{color:var(--bad);} .msg.ok{color:var(--ok);}
+  .hide{display:none;} .row{display:flex;gap:8px;flex-wrap:wrap;}
+  .decl{font-size:12px;color:var(--muted);background:#f0f2f5;border-radius:7px;padding:10px;margin:8px 0;}
+</style>
+</head>
+<body>
+<header><div class="wrap" style="padding:0"><h1>Project Console</h1><div class="sub">Participant application</div></div></header>
+<main class="wrap">
+
+  <section id="login">
+    <h2>Sign in</h2>
+    <label>Email</label><input id="email" value="participant@michealrayberry.com" />
+    <label>Password</label><input id="password" type="password" value="participant-dev-pass" />
+    <div class="row" style="margin-top:12px"><button id="loginBtn">Sign in</button></div>
+    <div class="msg err" id="loginMsg"></div>
+  </section>
+
+  <div id="authed" class="hide">
+    <section>
+      <h2>Today</h2>
+      <div id="dayline" class="sub"></div>
+      <div class="countdown" id="countdown">--:--:--</div>
+      <div class="strip" id="strip"></div>
+    </section>
+
+    <section>
+      <h2>Requirements</h2>
+      <div id="reqs"></div>
+    </section>
+
+    <section>
+      <h2>Submit weight</h2>
+      <label>Documented weight (lb)</label><input id="wval" type="number" step="0.1" placeholder="e.g. 268.4" />
+      <div class="decl">I confirm this information is accurate to the best of my knowledge and has not been
+        materially altered to misrepresent compliance.</div>
+      <button id="wbtn">Submit weight entry</button>
+      <div class="msg" id="wmsg"></div>
+    </section>
+
+    <section>
+      <h2>Notices</h2>
+      <div id="notices"><div class="sub">None.</div></div>
+    </section>
+  </div>
+</main>
+
+<script>
+let token = null, today = null;
+const $ = (id) => document.getElementById(id);
+const icon = { VERIFIED:'✓', SUBMITTED:'…', UNDER_REVIEW:'…', IN_PROGRESS:'…', NOT_STARTED:'○', DEFICIENT:'!', MISSED:'✕', LATE:'▲' };
+const badge = (s) => `<span class="badge b-${s}" >${icon[s]||'•'} ${(s||'').replace(/_/g,' ')}</span>`;
+
+async function api(path, opts={}) {
+  const res = await fetch(path, { ...opts, headers: { 'content-type':'application/json',
+    ...(token ? { authorization: `Bearer ${token}` } : {}), ...(opts.headers||{}) } });
+  const body = await res.json().catch(()=>({}));
+  if (!res.ok) throw new Error(body.error || res.status);
+  return body;
+}
+
+$('loginBtn').onclick = async () => {
+  try {
+    const r = await api('/auth/login', { method:'POST', body: JSON.stringify({ email:$('email').value, password:$('password').value }) });
+    token = r.token; $('login').classList.add('hide'); $('authed').classList.remove('hide');
+    await loadToday(); loadNotices();
+  } catch (e) { $('loginMsg').textContent = 'Sign-in failed: ' + e.message; }
+};
+
+async function loadToday() {
+  today = await api('/participant/today');
+  $('dayline').textContent = `${today.localDate} · Project Day ${today.dayNumber} · ${today.timeZone} · ${today.overallStatus.replace(/_/g,' ')}`;
+  renderReqs();
+  startCountdown(today.dayDeadline);
+  $('strip').textContent = 'Connected · Server time ' + new Date(today.serverTime).toLocaleString();
+}
+
+function renderReqs() {
+  $('reqs').innerHTML = today.requirements.map(r => {
+    const canSubmit = ['NOT_STARTED','IN_PROGRESS','DEFICIENT'].includes(r.status);
+    const action = r.evidenceType === 'EXTERNAL_LINK'
+      ? `<button class="sec" onclick="submitLink('${r.id}','${r.name}')" ${canSubmit?'':'disabled'}>Add link</button>`
+      : r.evidenceType === 'WEIGHT'
+      ? `<span class="meta">via weight form ↓</span>`
+      : `<button class="sec" onclick="submitEvidence('${r.id}','${r.evidenceType}')" ${canSubmit?'':'disabled'}>Submit evidence</button>`;
+    return `<div class="req"><div class="top"><span class="name">${r.name}</span>${badge(r.status)}</div>
+      <div class="meta">Deadline ${new Date(r.deadlineAt).toLocaleString()} · ${r.timeliness||'—'}</div>
+      <div class="row" style="margin-top:8px">${action}</div></div>`;
+  }).join('');
+}
+
+window.submitEvidence = async (id, type) => {
+  try {
+    // Evidence is captured/uploaded by the native app; here we register the record with metadata.
+    const r = await api('/participant/evidence', { method:'POST', body: JSON.stringify({
+      requirementInstanceId:id, type, sha256:'web-demo-'+id, sizeBytes:1234567, durationMs:60000, appVersion:'web-0.1.0' }) });
+    alert('Submitted. Server receipt: ' + r.shortCode + ' at ' + new Date(r.serverReceivedAt).toLocaleString());
+    await loadToday();
+  } catch (e) { alert('Failed: ' + e.message); }
+};
+
+window.submitLink = async (id, name) => {
+  const url = prompt(`Public URL for "${name}"`); if (!url) return;
+  try {
+    await api('/participant/external-links', { method:'POST', body: JSON.stringify({
+      requirementInstanceId:id, platform: name.toLowerCase().includes('x ')?'x':'website', url }) });
+    await loadToday();
+  } catch (e) { alert('Failed: ' + e.message); }
+};
+
+$('wbtn').onclick = async () => {
+  const weightReq = today.requirements.find(r => r.evidenceType === 'WEIGHT');
+  try {
+    await api('/participant/weights', { method:'POST', body: JSON.stringify({
+      projectDayId: today.day.id, weight: parseFloat($('wval').value), unit:'lb',
+      requirementInstanceId: weightReq ? weightReq.id : undefined }) });
+    $('wmsg').className='msg ok'; $('wmsg').textContent='Weight submitted for AP verification.';
+    await loadToday();
+  } catch (e) { $('wmsg').className='msg err'; $('wmsg').textContent='Failed: '+e.message; }
+};
+
+async function loadNotices() {
+  const n = await api('/participant/notices');
+  $('notices').innerHTML = n.length ? n.map(x =>
+    `<div class="req"><div class="top"><span class="name">${x.title}</span><span class="meta">${x.type}</span></div>
+     <div class="meta">${new Date(x.issuedAt).toLocaleString()}</div><div style="margin-top:6px">${x.body}</div></div>`).join('')
+    : '<div class="sub">None.</div>';
+}
+
+function startCountdown(deadlineIso) {
+  const el = $('countdown');
+  const tick = () => {
+    let ms = new Date(deadlineIso) - new Date();
+    if (ms < 0) { el.textContent = 'Deadline passed'; return; }
+    const h = Math.floor(ms/3.6e6), m = Math.floor(ms%3.6e6/6e4), s = Math.floor(ms%6e4/1000);
+    el.textContent = [h,m,s].map(n=>String(n).padStart(2,'0')).join(':');
+  };
+  tick(); clearInterval(window._cd); window._cd = setInterval(tick, 1000);
+}
+</script>
+</body>
+</html>
