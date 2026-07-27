@@ -1,0 +1,13 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base platform theme. The actual UI theme is a Material 3 Compose theme
+         (see ui/theme/Theme.kt); this exists so the launcher/splash window and
+         the Activity have a sane, non-flashing dark surface before Compose
+         takes over. Deliberately near-black — this is a compliance tool, not a
+         playful fitness app. -->
+    <style name="Theme.ProjectConsole" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+    </style>
+</resources>

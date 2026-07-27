@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Minimal, restrained mark: a monospace-styled bracket console glyph on a
+     neutral field. Placeholder art; replace with the real project mark. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#F3F3F4"
+        android:pathData="M38,38 L30,54 L38,70 L44,70 L36,54 L44,38 Z" />
+    <path
+        android:fillColor="#4C7DA6"
+        android:pathData="M70,38 L78,54 L70,70 L64,70 L72,54 L64,38 Z" />
+    <path
+        android:fillColor="#A7A7AD"
+        android:pathData="M50,44 h8 v20 h-8 z" />
+</vector>

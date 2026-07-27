@@ -58,7 +58,9 @@ web/
   portal/            AP administration portal (§8)
   participant/       Participant web client (runnable stand-in for the native app)
   integration/       Embeddable status widget for michealrayberry.com (§5.5)
-android/             Native participant client source skeleton (Kotlin/Compose) — see android/README.md
+android/             Native participant client source (Kotlin/Compose/CameraX/Room/WorkManager)
+                     Server-anchored countdown, resumable uploads, guided recording.
+                     Not compiled here (no Android SDK) — see android/README.md
 docs/                Architecture, ERD, API, privacy, deployment, guides, checklists
 ```
 

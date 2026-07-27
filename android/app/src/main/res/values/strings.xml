@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">Project Console</string>
+
+    <!-- Bottom navigation destinations. -->
+    <string name="nav_today">Today</string>
+    <string name="nav_record">Record</string>
+    <string name="nav_history">History</string>
+    <string name="nav_notices">Notices</string>
+    <string name="nav_project">Project</string>
+
+    <!-- Upload foreground service. -->
+    <string name="upload_channel_name">Evidence uploads</string>
+    <string name="upload_channel_description">Durable, resumable evidence uploads</string>
+    <string name="upload_notification_title">Uploading evidence</string>
+</resources>
