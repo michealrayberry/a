@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Build requirements:
+      * .NET SDK 6+ (any modern SDK can target net462 via the reference-assemblies package)
+      * Valheim installed, with BepInEx (BepInExPack_Valheim) installed into it
+    Game/BepInEx references are supplied by the JotunnLib package, which finds your
+    Valheim install (Steam registry on Windows, ~/.steam on Linux) and publicizes the
+    game assemblies on first build. Override with:  dotnet build -p:VALHEIM_INSTALL="D:\Games\Valheim"
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net462</TargetFramework>
+    <AssemblyName>HardcoreCartography</AssemblyName>
+    <RootNamespace>HardcoreCartography</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Version>0.1.0</Version>
+    <ExecutePrebuild>true</ExecutePrebuild>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="JotunnLib" Version="2.30.2" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Optional: copy the built DLL straight into BepInEx/plugins after each build. -->
+  <Target Name="CopyToPlugins" AfterTargets="Build" Condition="'$(BEPINEX_PATH)' != '' And Exists('$(BEPINEX_PATH)/plugins')">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(BEPINEX_PATH)/plugins/HardcoreCartography" />
+  </Target>
+
+</Project>

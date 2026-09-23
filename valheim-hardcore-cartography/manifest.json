@@ -1,0 +1,10 @@
+{
+  "name": "HardcoreCartography",
+  "version_number": "0.1.0",
+  "website_url": "",
+  "description": "No-map worlds stay no-map in the field. Craft a Wayfinder's Chart and study the map only at your base.",
+  "dependencies": [
+    "denikson-BepInExPack_Valheim-5.4.2202",
+    "ValheimModding-Jotunn-2.30.2"
+  ]
+}
