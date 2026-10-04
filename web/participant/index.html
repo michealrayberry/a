@@ -74,6 +74,14 @@
     </section>
 
     <section>
+      <h2>Monitoring integrity</h2>
+      <div class="sub" style="font-size:12px;margin-bottom:8px">Your phone app reports a heartbeat. If monitoring is interrupted, it is recorded and referred to your
+        Accountability Partner. Loss of monitoring does not suspend the underlying requirement.</div>
+      <div id="integ"><div class="sub">Loading…</div></div>
+      <div class="msg" id="integmsg"></div>
+    </section>
+
+    <section>
       <h2>Notices</h2>
       <div id="notices"><div class="sub">None.</div></div>
     </section>
@@ -98,7 +106,7 @@ $('loginBtn').onclick = async () => {
   try {
     const r = await api('/auth/login', { method:'POST', body: JSON.stringify({ email:$('email').value, password:$('password').value }) });
     token = r.token; $('login').classList.add('hide'); $('authed').classList.remove('hide');
-    await loadToday(); loadNotices(); loadWebControls();
+    await loadToday(); loadNotices(); loadWebControls(); loadIntegrity();
   } catch (e) { $('loginMsg').textContent = 'Sign-in failed: ' + e.message; }
 };
 
@@ -192,6 +200,26 @@ window.requestAccess = async (controlId) => {
 window.withdrawReq = async (id) => {
   try { await api(`/participant/web-controls/requests/${id}/withdraw`, { method:'POST' }); loadWebControls(); }
   catch (e) { $('webmsg').className='msg err'; $('webmsg').textContent='Failed: '+e.message; }
+};
+
+async function loadIntegrity() {
+  const d = await api('/participant/integrity');
+  const when = (iso) => iso ? new Date(iso).toLocaleString() : '—';
+  const head = `<div class="meta">Heartbeat: <b>${d.heartbeat.state.replace(/_/g,' ')}</b> (last ${when(d.heartbeat.lastReceivedAt)}) ·
+    Private DNS: <b>${d.privateDns.state}</b> (last confirmed ${when(d.privateDns.lastConfirmedAt)})</div>`;
+  const inc = d.incidents.map(i => `<div class="req"><div class="top"><span class="name">${esc(i.title)}</span><span class="badge">${esc(i.statusLabel)}</span></div>
+    <div class="meta">Detected ${when(i.detectedAt)} · Restored ${i.restoredAt ? when(i.restoredAt) : 'NOT RESTORED'} · ${i.interruptionMinutes} min</div>
+    <div class="meta">${esc(i.detail)}</div>
+    ${i.participantExplanation ? `<div class="meta"><b>Your explanation:</b> ${esc(i.participantExplanation)}</div>`
+      : i.status !== 'REVIEWED' ? `<div class="row" style="margin-top:8px"><button class="sec" onclick="explainInc('${i.id}')">Submit explanation</button></div>` : ''}
+    ${i.determination ? `<div class="meta"><b>AP determination:</b> ${esc(i.determination.replace(/_/g,' '))} — ${esc(i.reviewNote)}</div>` : ''}</div>`).join('');
+  $('integ').innerHTML = head + (inc || '<div class="sub" style="margin-top:8px">No incidents.</div>');
+}
+window.explainInc = async (id) => {
+  const explanation = prompt('Explanation (one submission; cannot be edited afterwards):'); if (!explanation) return;
+  try { await api(`/participant/integrity/incidents/${id}/explanation`, { method:'POST', body: JSON.stringify({ explanation }) });
+    $('integmsg').className='msg ok'; $('integmsg').textContent='Explanation recorded for AP review.'; loadIntegrity();
+  } catch (e) { $('integmsg').className='msg err'; $('integmsg').textContent='Failed: '+e.message; }
 };
 
 function startCountdown(deadlineIso) {

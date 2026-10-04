@@ -22,6 +22,8 @@ export function apRouter(db: DB, clock: Clock): Router {
       openViolations: q(`SELECT COUNT(*) c FROM violations WHERE state IN ('ASSESSED','OVERDUE','ESCALATED')`),
       lateSubmissions: q(`SELECT COUNT(*) c FROM requirement_instances WHERE status = 'LATE'`),
       missed: q(`SELECT COUNT(*) c FROM requirement_instances WHERE status = 'MISSED'`),
+      integrityReviewRequired: q(`SELECT COUNT(*) c FROM integrity_incidents WHERE status = 'AP_REVIEW_REQUIRED'`),
+      integrityInterrupted: q(`SELECT COUNT(*) c FROM integrity_incidents WHERE status = 'OPEN' AND severity = 'INTERRUPTED'`),
     });
   });
 

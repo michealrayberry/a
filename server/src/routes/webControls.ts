@@ -18,7 +18,6 @@ import {
   bindProfile,
   blockDomain,
   denyAccessRequest,
-  getIntegrityStatus,
   getNextDnsStatus,
   getParticipantWebControls,
   getWebControls,
@@ -33,8 +32,9 @@ import {
   webControlHistory,
   withdrawAccessRequest,
 } from '../services/webControls.js';
+import { getIntegrityStatus } from '../services/integrity.js';
 
-function fail(res: Response, e: unknown) {
+export function fail(res: Response, e: unknown) {
   if (e instanceof WebControlError) return res.status(e.httpStatus).json({ error: e.message });
   if (e instanceof ValidationError) return res.status(400).json({ error: e.message });
   console.error('web-controls error', e);
@@ -42,7 +42,7 @@ function fail(res: Response, e: unknown) {
 }
 
 type Handler = (req: AuthedRequest, res: Response) => unknown;
-const wrap =
+export const wrap =
   (fn: Handler) =>
   async (req: AuthedRequest, res: Response) => {
     try {

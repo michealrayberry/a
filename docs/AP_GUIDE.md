@@ -79,6 +79,21 @@ account, the API key, and the profile binding.
 - Every action appears in **Web Controls History** and the main audit log,
   neither of which can be edited.
 
+## Integrity
+
+The **Integrity** tab monitors the monitoring itself.
+
+- **INTERRUPTED** means the phone itself reported Private DNS off or pointed at
+  the wrong place. **DEGRADED** means something went quiet, such as the
+  heartbeat, DNS traffic, or NextDNS. Silence alone is not evidence of a bypass.
+- Restored incidents that need your decision show **AP REVIEW REQUIRED**. Read
+  the participant's explanation if there is one, then record a determination
+  and a note. Determinations do not assess consequences; use **Violations** if
+  one is warranted.
+- **Authorized windows** are how you give prior approval, for example while
+  troubleshooting the phone. Interruptions inside a window are still recorded.
+- Loss of monitoring does not suspend the participant's obligations.
+
 ## Audit log
 
 Every material action is recorded with actor, role, action, previous/new state,

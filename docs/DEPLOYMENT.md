@@ -8,7 +8,7 @@ cp ../.env.example .env      # then edit JWT_SECRET etc.
 npm install
 npm run seed                 # creates project-console.db with demo data
 npm run dev                  # http://localhost:3000
-npm test                     # 59 tests
+npm test                     # 75 tests
 ```
 
 Surfaces once running:

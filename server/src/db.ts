@@ -309,6 +309,73 @@ function migrate(db: DB): void {
   CREATE UNIQUE INDEX IF NOT EXISTS uq_one_active_grant
     ON web_temporary_grants(controlId) WHERE status = 'ACTIVE';
 
+  -- ---- Monitoring integrity (Phase 5, docs/NEXTDNS.md) ----------------------
+  -- Raw phone heartbeats. serverReceivedAt is trusted; clientTime is not.
+  CREATE TABLE IF NOT EXISTS device_heartbeats (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL REFERENCES projects(id),
+    participantId TEXT NOT NULL,
+    deviceId TEXT NOT NULL,
+    serverReceivedAt TEXT NOT NULL,
+    clientTime TEXT,
+    privateDnsMode TEXT NOT NULL,
+    privateDnsHost TEXT,
+    privateDnsState TEXT NOT NULL,
+    network TEXT NOT NULL,
+    recordingReady INTEGER,
+    appVersion TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_heartbeats_project ON device_heartbeats(projectId, serverReceivedAt);
+
+  -- Latest known state per monitored component (a cache; history is in incidents + audit).
+  CREATE TABLE IF NOT EXISTS integrity_checks (
+    projectId TEXT NOT NULL REFERENCES projects(id),
+    component TEXT NOT NULL,
+    state TEXT NOT NULL,
+    lastVerifiedAt TEXT,
+    lastCheckedAt TEXT NOT NULL,
+    detail TEXT,
+    PRIMARY KEY (projectId, component)
+  );
+
+  -- Interruptions/degradations. Restoration closes an incident; nothing deletes one.
+  CREATE TABLE IF NOT EXISTS integrity_incidents (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL REFERENCES projects(id),
+    type TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('INTERRUPTED','DEGRADED')),
+    status TEXT NOT NULL CHECK (status IN ('OPEN','AP_REVIEW_REQUIRED','CLOSED','REVIEWED')),
+    lastVerifiedAt TEXT,
+    detectedAt TEXT NOT NULL,
+    restoredAt TEXT,
+    detail TEXT NOT NULL,
+    restoreDetail TEXT,
+    exemptionId TEXT,
+    participantExplanation TEXT,
+    participantExplainedAt TEXT,
+    determination TEXT,
+    reviewNote TEXT,
+    reviewedBy TEXT,
+    reviewedAt TEXT
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_one_open_incident
+    ON integrity_incidents(projectId, type) WHERE status = 'OPEN';
+  CREATE TRIGGER IF NOT EXISTS integrity_incidents_no_delete BEFORE DELETE ON integrity_incidents
+  BEGIN SELECT RAISE(ABORT, 'integrity_incidents cannot be deleted'); END;
+
+  -- AP-authorized windows (the "prior AP approval" path, e.g. troubleshooting).
+  CREATE TABLE IF NOT EXISTS integrity_exemptions (
+    id TEXT PRIMARY KEY,
+    projectId TEXT NOT NULL REFERENCES projects(id),
+    component TEXT NOT NULL CHECK (component IN ('PRIVATE_DNS','PHONE_HEARTBEAT','ALL')),
+    startsAt TEXT NOT NULL,
+    endsAt TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    grantedBy TEXT NOT NULL,
+    revokedAt TEXT,
+    revokedBy TEXT
+  );
+
   CREATE INDEX IF NOT EXISTS idx_days_project ON project_days(projectId, localDate);
   CREATE INDEX IF NOT EXISTS idx_reqinst_day ON requirement_instances(projectDayId);
   CREATE INDEX IF NOT EXISTS idx_evidence_req ON evidence(requirementInstanceId);

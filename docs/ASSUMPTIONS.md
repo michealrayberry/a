@@ -26,7 +26,7 @@ runnable reference implementation:
 - Append-only **audit trail** on every material action.
 - Read-only **public API** that structurally cannot return private rows and
   strips identifying fields.
-- A **test suite** (`npm test`, 59 tests) covering deadline/DST math, boundary
+- A **test suite** (`npm test`, 75 tests) covering deadline/DST math, boundary
   timeliness, state machines, day generation, the end-to-end
   participant→AP→public sequence, and the security/permission checks called out
   in the acceptance criteria.
@@ -53,9 +53,10 @@ call the real API.
 
 ## NextDNS / Web Controls
 
-Phases 1–3 (foundation, policy controls, temporary access) are **built and
-tested**. Phases 4 (activity) and 5 (heartbeat/integrity incidents) are designed
-but not built. See [`NEXTDNS.md`](./NEXTDNS.md). Assumptions:
+Phases 1–3 (foundation, policy controls, temporary access) and Phase 5
+(monitoring integrity) are **built and tested** on the server and web. The
+Phase 5 Android heartbeat is source-only, like the rest of `android/`.
+Phase 4 (activity) is designed but not built. See [`NEXTDNS.md`](./NEXTDNS.md). Assumptions:
 
 - **The NextDNS API paths were not verified against the live API** during the
   build (the reference site was unreachable). They are isolated in

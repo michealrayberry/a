@@ -58,7 +58,7 @@ NextDNS status/activity ─► backend ─► AP Portal
 | Operation | Route |
 |---|---|
 | `getNextDnsStatus()` | `GET /ap/web-controls/status` |
-| `getIntegrityStatus()` | `GET /ap/web-controls/integrity` |
+| `getIntegrityStatus()` | `GET /ap/integrity` (also served at `GET /ap/web-controls/integrity`) |
 | list controls and pending requests | `GET /ap/web-controls` |
 | audit history | `GET /ap/web-controls/history` |
 | bind a profile (the id is verified against NextDNS first) | `PUT /ap/web-controls/profiles/:label` |
@@ -125,12 +125,9 @@ system, not only this module.
 | `UNVERIFIED` | The NextDNS API could not be reached |
 | `NOT_CONFIGURED` | The profile is not bound, or there is no API key |
 
-The overall status is `ACTIVE` or `DEGRADED`. **`INTERRUPTED` and `RESTORED`
-are reserved for Phase 5.** They need positive confirmation, such as a phone
-heartbeat reporting that Private DNS is off. DNS silence alone is never
-reported as an interruption. The integrity panel shows "Phone heartbeat" and
-"Recording Assistant" as `NOT_IMPLEMENTED` rather than displaying them as
-healthy.
+These per-profile states feed the integrity status. `INTERRUPTED` requires a
+positive report from the phone's heartbeat that Private DNS is off or wrong;
+DNS silence alone never produces it. See Phase 5 below.
 
 ### Router vs. Pixel
 
@@ -146,7 +143,7 @@ Micheal"*. Phone-specific accountability should use RAY-PIXEL.
 | 2. Policy controls: denylist, allowlist, monitored domains, selected filtering settings | **Built and tested** |
 | 3. Temporary access: requests, approve, approve with a different duration, deny, timed access, automatic restoration | **Built and tested** |
 | 4. Activity: blocked events, monitored-domain events, visibility modes, router vs. Pixel separation | Not built. Planned design is below. |
-| 5. Integrity: phone heartbeat, `INTERRUPTED`/`RESTORED` incidents, AP review | Not built. Status vocabulary and UI slots are reserved. |
+| 5. Integrity: phone heartbeat, NextDNS health checks, interruption and restoration incidents, AP integrity dashboard | **Built and tested** (server and web). Android heartbeat source written but not compiled here. |
 
 ### Phase 4 design
 
@@ -159,15 +156,85 @@ Micheal"*. Phone-specific accountability should use RAY-PIXEL.
 - Label every DNS event as a *signal*, never as proof of deliberate use:
   `doordash.com contacted` is not the same as "opened DoorDash".
 
-### Phase 5 design
+## Phase 5: monitoring integrity
 
-- The Android app posts a signed heartbeat about every 5 minutes that includes
-  the Private DNS mode and hostname (readable through
-  `Settings.Global "private_dns_mode"/"private_dns_specifier"`).
-- An incident opens only when the heartbeat confirms Private DNS is off or
-  changed. It records last verified, failure detected, restored, and duration,
-  with status `AP REVIEW REQUIRED`. Restoration closes the incident but never
-  deletes it.
+Code: `server/src/services/integrity.ts`, `server/src/routes/integrity.ts`, the
+portal's **Integrity** tab, the participant's **Monitoring integrity** section,
+and the Android files `integrity/PrivateDnsProbe.kt`, `work/HeartbeatWorker.kt`,
+and `work/HeartbeatScheduler.kt`.
+
+### Signals: confirmed vs. circumstantial
+
+| Incident | Trigger | Severity | AP review | Participant notified |
+|---|---|---|---|---|
+| `PRIVATE_DNS_DISABLED`: *DNS ACCOUNTABILITY INTERRUPTED* | The heartbeat **reports** Private DNS as Off, Automatic, or a hostname that isn't RAY-PIXEL | **INTERRUPTED** | Always | Yes |
+| `DNS_HEARTBEAT_MISMATCH` | The heartbeat says compliant and online, but NextDNS logged no RAY-PIXEL query for over 60 minutes | DEGRADED | Always | Yes |
+| `PHONE_HEARTBEAT_LOST` | No heartbeat for over 45 minutes (three missed 15-minute beats) | DEGRADED | Only if it lasts 3 hours or more | No |
+| `HOME_ROUTER_SILENT` | No HOME-ROUTER query for over 2 hours | DEGRADED | Never (shared network, not attributed) | No |
+| `NEXTDNS_API_UNREACHABLE` | The backend cannot reach NextDNS | DEGRADED | Never (this is the AP's own infrastructure) | No |
+
+Only a **positive report from the phone** produces INTERRUPTED. Silence of any
+kind produces DEGRADED. A phone that has never sent a heartbeat opens no
+incident, and a heartbeat sent while offline (`network: NONE`,
+`privateDnsMode: unknown`) changes nothing.
+
+The mismatch check exists because the heartbeat is self-reported: the
+participant controls the phone and the session token, so the heartbeat can be
+faked. NextDNS's own logs are the independent check. Each heartbeat makes a DNS
+lookup for the backend, so a phone that really uses RAY-PIXEL keeps producing
+RAY-PIXEL queries. **NextDNS logging must stay enabled** on both profiles, or
+the mismatch check will fire.
+
+### Lifecycle (restoration never erases)
+
+`OPEN` → restored → `AP_REVIEW_REQUIRED` or `CLOSED` → `REVIEWED`
+
+Each incident records last verified active, failure detected, restored, the
+**interruption** length (from detection to restoration), and the **maximum
+window** (from the last verification to restoration). For example: last
+verified 8:41 PM, detected 8:46 PM, restored 9:03 PM gives an interruption of
+17 minutes and a window of at most 22 minutes.
+
+- **Participant explanation:** one submission per incident, which cannot be
+  edited. This is the route for the safety, emergency, and device-recovery
+  exceptions in the project rule.
+- **AP determination:** `TECHNICAL_FAILURE`, `AUTHORIZED_EXCEPTION`,
+  `UNAUTHORIZED_INTERRUPTION`, or `INCONCLUSIVE`, with a required note. Only
+  restored incidents can be reviewed, so an open incident cannot be reviewed
+  away. An `UNAUTHORIZED_INTERRUPTION` determination does **not** assess a
+  consequence automatically; the AP uses the Violations workflow.
+- Incidents cannot be deleted (a database trigger enforces this), and every
+  transition is in the append-only audit log.
+
+### AP-authorized windows (the "prior AP approval" path)
+
+`POST /ap/integrity/exemptions {component: PRIVATE_DNS | PHONE_HEARTBEAT | ALL,
+minutes, reason}` grants a window. An interruption inside a window is **still
+recorded**, but it closes without review if it is restored before the window
+ends. No participant notice is sent for it. If the window ends first, the
+incident needs review as usual. The AP can end a window early.
+
+### Overall status
+
+`INTERRUPTED` (an open confirmed interruption) > `NOT_CONFIGURED` > `DEGRADED`
+(any open incident, or any component not healthy) > `RESTORED` (everything is
+healthy but incidents await review) > `ACTIVE`.
+
+### Integrity API
+
+| Route | Who |
+|---|---|
+| `POST /participant/integrity/heartbeat` `{deviceId, privateDnsMode: off\|opportunistic\|hostname\|unknown, privateDnsHost?, network: WIFI\|CELLULAR\|OTHER\|NONE, recordingReady?, appVersion?, clientTime?}` | Participant (the phone app) |
+| `GET /participant/integrity` | Participant: own heartbeat and Private DNS state, and incidents |
+| `POST /participant/integrity/incidents/:id/explanation` `{explanation}` | Participant, once per incident |
+| `GET /ap/integrity` | AP dashboard: overall status, components, incidents, active windows |
+| `GET /ap/integrity/incidents` | AP |
+| `POST /ap/integrity/incidents/:id/review` `{determination, note}` | AP |
+| `POST /ap/integrity/exemptions`, `POST /ap/integrity/exemptions/:id/revoke` | AP |
+| `POST /ap/integrity/sweep` | AP (also runs every minute; NextDNS is checked every 5 minutes) |
+
+The first heartbeat from a new `deviceId` is audited
+(`PHONE_DEVICE_REGISTERED`), so a switch to a different phone is visible.
 
 ## Setup
 
@@ -229,10 +296,12 @@ them impossible.
 
 | Gap | Current control | Recommended next step |
 |---|---|---|
-| Turning Private DNS off on the Pixel | None until the Phase 5 heartbeat. DNS silence alone is not proof. | Build the Phase 5 heartbeat first. It is the only confirmation signal. |
+| Turning Private DNS off on the Pixel | The heartbeat reports it immediately (network callback) or within 15 minutes, which opens an INTERRUPTED incident | — |
+| Faking heartbeats (the participant holds the token) | Cross-checked against NextDNS logs, which raise `DNS_HEARTBEAT_MISMATCH` | Keep NextDNS logging on |
+| Signing out of the app, force-stopping it, uninstalling it, or turning off battery-optimization exemption | Heartbeats stop, so the incident is `PHONE_HEARTBEAT_LOST` (DEGRADED), with review after 3 hours | Add an agreement rule: the app stays installed and signed in. Consider a lower review threshold. |
+| Doze deferring heartbeats overnight | Tolerated: DEGRADED, and short gaps need no review | Exempt the app from battery optimization |
 | Participant is a Google Home admin for Nest Wifi and can change its DNS | None | Make the AP the Nest owner/manager, or accept that changes are detectable once HOME-ROUTER goes quiet |
 | VPN, proxy, or a browser's own secure DNS (Chrome/Firefox DoH) | NextDNS `blockBypass` setting, which the AP can toggle | Turn `blockBypass` on for both profiles at launch |
-| Cellular data with Private DNS off | Same as the first row | Phase 5 |
 | Retained NextDNS credentials | The AP owns the account, and the key lives only on the server | Confirm the participant has no login, recovery email, or API key for the account |
 | Domain blocks miss alternate domains (for example `redd.it`) | Service-id blocks (`reddit`) cover a service's domain set | Prefer service ids where NextDNS has one |
 | Simulated mode mistaken for real enforcement | Integration shows `SIMULATED` and the integrity summary says "NOT REAL ENFORCEMENT" | Never set `NEXTDNS_MODE=simulated` in production |

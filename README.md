@@ -20,7 +20,7 @@ cp ../.env.example .env      # set JWT_SECRET
 npm install
 npm run seed                 # demo project, users, sample days
 npm run dev                  # http://localhost:3000
-npm test                     # 59 tests
+npm test                     # 75 tests
 ```
 
 Then open:
@@ -54,7 +54,7 @@ server/            Backend, compliance engine, public API (TypeScript, runnable,
   src/config.ts      Versioned rule schema + seed configuration (§28)
   src/services/*     Submission, AP review, projects/config, public projection, export
   src/routes/*       /auth /participant /ap /public
-  test/*             59 tests incl. the acceptance-criteria sequence
+  test/*             75 tests incl. the acceptance-criteria sequence
 web/
   public-record/     Read-only public site (§14)
   portal/            AP administration portal (§8)

@@ -4,6 +4,7 @@ import { runDeadlineSweep } from './engine.js';
 import { systemClock } from './time.js';
 import { nextDnsFromEnv } from './nextdns/gateway.js';
 import { runWebControlSweep } from './services/webControls.js';
+import { runIntegritySweep } from './services/integrity.js';
 
 const db = openDb();
 const nextdns = nextDnsFromEnv();
@@ -29,6 +30,13 @@ const WEB_SWEEP_MS = Number(process.env.WEB_CONTROL_SWEEP_MS ?? 30_000);
 setInterval(() => {
   runWebControlSweep(db, nextdns, systemClock).catch((e) => console.error('web-control sweep failed', e));
 }, WEB_SWEEP_MS).unref();
+
+// Monitoring-integrity sweep: heartbeat staleness every pass; NextDNS health
+// checks are throttled inside the sweep (NEXTDNS_CHECK_INTERVAL_MINUTES).
+const INTEGRITY_SWEEP_MS = Number(process.env.INTEGRITY_SWEEP_MS ?? 60_000);
+setInterval(() => {
+  runIntegritySweep(db, nextdns, systemClock).catch((e) => console.error('integrity sweep failed', e));
+}, INTEGRITY_SWEEP_MS).unref();
 
 app.listen(port, () => {
   console.log(`Project Console backend listening on http://localhost:${port}`);

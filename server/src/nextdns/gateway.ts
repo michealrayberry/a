@@ -182,7 +182,15 @@ export class SimulatedNextDnsGateway implements NextDnsGateway {
     private readonly now: () => string = () => new Date().toISOString(),
     /** Development convenience: any profile id "exists" on first use. */
     private readonly autoCreate = true,
+    /** Development convenience: every profile appears to have just seen a query. */
+    private readonly continuousTraffic = autoCreate,
   ) {}
+
+  /** Test helper: pretend NextDNS logged a query for the profile at `at`. */
+  recordQuery(profileId: string, at: string | null): void {
+    const p = this.profiles.get(profileId);
+    if (p) p.lastQueryAt = at;
+  }
 
   addProfile(profileId: string): void {
     this.profiles.set(profileId, {
@@ -220,7 +228,8 @@ export class SimulatedNextDnsGateway implements NextDnsGateway {
     for (const k of FILTERING_SETTING_KEYS) if (settings[k] !== undefined) p.filtering[k] = settings[k]!;
   }
   async getLastQueryAt(profileId: string): Promise<string | null> {
-    return this.get(profileId, 'getLogs').lastQueryAt;
+    const p = this.get(profileId, 'getLogs');
+    return this.continuousTraffic ? this.now() : p.lastQueryAt;
   }
 }
 

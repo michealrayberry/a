@@ -8,6 +8,7 @@ import { participantRouter } from './routes/participant.js';
 import { apRouter } from './routes/ap.js';
 import { publicRouter } from './routes/publicApi.js';
 import { apWebControlsRouter, participantWebControlsRouter } from './routes/webControls.js';
+import { apIntegrityRouter, participantIntegrityRouter } from './routes/integrity.js';
 import { nextDnsFromEnv, type NextDnsGateway } from './nextdns/gateway.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,8 +29,10 @@ export function createApp(
 
   app.use('/auth', authRouter(db, clock));
   app.use('/participant/web-controls', participantWebControlsRouter(db, clock));
+  app.use('/participant/integrity', participantIntegrityRouter(db, clock));
   app.use('/participant', participantRouter(db, clock));
   app.use('/ap/web-controls', apWebControlsRouter(db, clock, nextdns));
+  app.use('/ap/integrity', apIntegrityRouter(db, clock, nextdns));
   app.use('/ap', apRouter(db, clock));
   app.use('/public', publicRouter(db));
 

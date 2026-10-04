@@ -111,7 +111,7 @@ and default to the single active project.
 |---|---|---|
 | `GET /ap/web-controls` | — | Controls (with any `activeGrant`), pending requests, project `timeZone` |
 | `GET /ap/web-controls/status` | — | `{ integration: LIVE\|SIMULATED\|NOT_CONFIGURED, overall, profiles[] }` |
-| `GET /ap/web-controls/integrity` | — | Accountability-system components and summary |
+| `GET /ap/web-controls/integrity` | — | Same as `GET /ap/integrity` (see Monitoring integrity below) |
 | `GET /ap/web-controls/history` | — | Web-control audit entries with `mode` (MANUAL/AUTOMATIC) and `target` |
 | `PUT /ap/web-controls/profiles/:label` | `{ nextdnsProfileId }` | `label` is `RAY-PIXEL` or `HOME-ROUTER`; the id is verified with NextDNS |
 | `PATCH /ap/web-controls/profiles/:label/filtering` | `{ settings: { safeSearch?, youtubeRestrictedMode?, blockBypass? } }` | Other keys return `400` |
@@ -134,6 +134,10 @@ the sweep keeps retrying. `503 nextdns_not_configured` is returned when no API
 key is configured. `409` means a conflicting state, such as a duplicate control,
 an unbound profile, or a request that is not pending. `502` means NextDNS was
 unreachable during a synchronous check.
+
+## Monitoring integrity
+
+See [`NEXTDNS.md` → Phase 5](./NEXTDNS.md#phase-5-monitoring-integrity) for the routes under `/participant/integrity` and `/ap/integrity`. `GET /ap/dashboard` also returns `integrityInterrupted` and `integrityReviewRequired`.
 
 ## Errors
 
