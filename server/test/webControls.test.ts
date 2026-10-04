@@ -108,7 +108,7 @@ describe('NextDNS web controls', () => {
     const restored = hist.find((e: any) => e.action === 'RESTRICTION_RESTORED');
     expect(restored).toMatchObject({ actorRole: 'SYSTEM', mode: 'AUTOMATIC' });
     expect(restored.reason).toBe('Temporary access expired. Reddit restriction restored.');
-    expect(hist.find((e: any) => e.action === 'TEMP_ACCESS_GRANTED').reason).toContain('AP granted Reddit access for 30 minutes');
+    expect(hist.find((e: any) => e.action === 'TEMP_ACCESS_GRANTED').reason).toBe('AP granted Reddit access for 30 minutes. Expires 9:12 PM EDT.');
   });
 
   it('approve with a different duration, and deny', async () => {

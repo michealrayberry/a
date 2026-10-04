@@ -505,6 +505,14 @@ export async function updateFilteringSettings(
 
 // ---- temporary access (Phase 3) ----------------------------------------------
 
+const mins = (n: number) => `${n} minute${n === 1 ? '' : 's'}`;
+
+/** "9:12 PM EDT" in the project's time zone, for human-readable audit text. */
+function localTime(db: DB, projectId: string, iso: string): string {
+  const p = db.prepare(`SELECT timeZone FROM projects WHERE id = ?`).get(projectId) as { timeZone: string } | undefined;
+  return DateTime.fromISO(iso, { zone: 'utc' }).setZone(p?.timeZone ?? 'utc').toFormat('h:mm a ZZZZ');
+}
+
 function grantInsert(
   db: DB,
   c: ControlRow,
@@ -541,7 +549,7 @@ function grantInsert(
     target: c.target,
     previousState: controlSnapshot(c),
     newState: 'BLOCK:TEMPORARILY_ALLOWED',
-    reason: `AP granted ${c.displayName} access for ${minutes} minutes (expires ${grant.expiresAt}).`,
+    reason: `AP granted ${c.displayName} access for ${mins(minutes)}. Expires ${localTime(db, c.projectId, grant.expiresAt)}.`,
   });
   return grant;
 }
@@ -654,7 +662,7 @@ export function submitAccessRequest(
       entityId: row.id,
       target: c.target,
       newState: 'PENDING',
-      reason: `Participant requested ${c.displayName} access for ${minutes} minutes. Reason: ${reason}`,
+      reason: `Participant requested ${c.displayName} access for ${mins(minutes)}. Reason: ${reason}`,
     });
   })();
   return row;
@@ -721,8 +729,8 @@ export async function approveAccessRequest(
       newState: 'APPROVED',
       reason:
         minutes === r.requestedMinutes
-          ? `AP approved ${c.displayName} access for ${minutes} minutes.`
-          : `AP approved ${c.displayName} access for ${minutes} minutes (requested ${r.requestedMinutes}).`,
+          ? `AP approved ${c.displayName} access for ${mins(minutes)}.`
+          : `AP approved ${c.displayName} access for ${mins(minutes)} (requested ${mins(r.requestedMinutes)}).`,
     });
     return g;
   })();
