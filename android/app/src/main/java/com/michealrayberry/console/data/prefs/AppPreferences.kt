@@ -9,7 +9,9 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -39,6 +41,14 @@ class AppPreferences @Inject constructor(
     val lastSyncedLocalDate: Flow<String?> =
         store.data.map { it[KEY_LAST_SYNCED_DATE] }
 
+    /** Random per-install id sent with heartbeats so the AP can see if the reporting device changes. */
+    suspend fun installId(): String {
+        store.data.first()[KEY_INSTALL_ID]?.let { return it }
+        val id = UUID.randomUUID().toString()
+        store.edit { if (it[KEY_INSTALL_ID] == null) it[KEY_INSTALL_ID] = id }
+        return store.data.first()[KEY_INSTALL_ID] ?: id
+    }
+
     suspend fun setTeleprompterEnabled(enabled: Boolean) {
         store.edit { it[KEY_TELEPROMPTER] = enabled }
     }
@@ -55,5 +65,6 @@ class AppPreferences @Inject constructor(
         val KEY_TELEPROMPTER = booleanPreferencesKey("teleprompter_enabled")
         val KEY_FRONT_CAMERA = booleanPreferencesKey("use_front_camera")
         val KEY_LAST_SYNCED_DATE = stringPreferencesKey("last_synced_date")
+        val KEY_INSTALL_ID = stringPreferencesKey("install_id")
     }
 }

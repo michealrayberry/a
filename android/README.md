@@ -127,6 +127,24 @@ Resilience details:
   single clearly-marked `putChunk` seam to wire to your storage — it does not
   fabricate a working upload or invent an endpoint.
 
+## Monitoring-integrity heartbeat (Phase 5)
+
+`integrity/PrivateDnsProbe` reads the active network's `LinkProperties`
+(`isPrivateDnsActive`, `privateDnsServerName`; API 28+). It only **reads**
+Private DNS state and never changes it. `work/HeartbeatWorker` posts the state,
+the network type, and Recording Assistant readiness (camera and microphone
+permissions) to `POST /participant/integrity/heartbeat`.
+`work/HeartbeatScheduler` runs it every 15 minutes, which is WorkManager's
+minimum. It also runs immediately after sign-in, and whenever the default
+network's Private DNS state changes while the app process is alive.
+
+The server decides whether the reported hostname is the RAY-PIXEL profile. The
+phone is not turned into a managed device: no Device Owner, no MDM, no
+accessibility service, and no foreground service. The tradeoff is that Doze can
+delay heartbeats overnight. The server handles that by treating a lost
+heartbeat as DEGRADED, and asks for AP review only after a long gap. See
+`docs/NEXTDNS.md`.
+
 ## No editing, capture only
 
 The recorder is a guided, single-continuous-take sequence engine

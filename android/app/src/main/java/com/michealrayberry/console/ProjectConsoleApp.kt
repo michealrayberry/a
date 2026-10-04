@@ -3,6 +3,7 @@ package com.michealrayberry.console
 import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.michealrayberry.console.work.HeartbeatScheduler
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
@@ -16,12 +17,21 @@ import javax.inject.Inject
  *   dependencies (repository, API, hashing) and, crucially, lets queued
  *   uploads resume after process death — the manifest disables WorkManager's
  *   default initializer so this configuration wins.
+ * - Starts the monitoring-integrity heartbeat ([HeartbeatScheduler]).
  */
 @HiltAndroidApp
 class ProjectConsoleApp : Application(), Configuration.Provider {
 
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
+
+    @Inject
+    lateinit var heartbeatScheduler: HeartbeatScheduler
+
+    override fun onCreate() {
+        super.onCreate()
+        heartbeatScheduler.start()
+    }
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()

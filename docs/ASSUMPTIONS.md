@@ -26,7 +26,7 @@ runnable reference implementation:
 - Append-only **audit trail** on every material action.
 - Read-only **public API** that structurally cannot return private rows and
   strips identifying fields.
-- A **test suite** (`npm test`, 42 tests) covering deadline/DST math, boundary
+- A **test suite** (`npm test`, 75 tests) covering deadline/DST math, boundary
   timeliness, state machines, day generation, the end-to-end
   participant→AP→public sequence, and the security/permission checks called out
   in the acceptance criteria.
@@ -50,6 +50,23 @@ call the real API.
   Firebase deployment would map collections 1:1 to the tables in
   [`docs/ERD.md`](./ERD.md) and move security rules into Firestore/Storage
   rules. See [`docs/DEPLOYMENT.md`](./DEPLOYMENT.md).
+
+## NextDNS / Web Controls
+
+Phases 1–3 (foundation, policy controls, temporary access) and Phase 5
+(monitoring integrity) are **built and tested** on the server and web. The
+Phase 5 Android heartbeat is source-only, like the rest of `android/`.
+Phase 4 (activity) is designed but not built. See [`NEXTDNS.md`](./NEXTDNS.md). Assumptions:
+
+- **The NextDNS API paths were not verified against the live API** during the
+  build (the reference site was unreachable). They are isolated in
+  `server/src/nextdns/gateway.ts` and must be checked on first live connection.
+- **The Cloudflare Worker is the deployment target, but this reference runs on
+  Node.** The NextDNS gateway is `fetch`-only and ports unchanged. The service
+  layer needs a D1 storage port.
+- Without `NEXTDNS_API_KEY`, the module reports `NOT_CONFIGURED` and refuses
+  policy writes. `NEXTDNS_MODE=simulated` is for development only and is
+  labelled as such everywhere.
 
 ## Decisions made where the blueprint left room (per §29 tie-breakers)
 

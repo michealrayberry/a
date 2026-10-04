@@ -50,6 +50,8 @@
     <a data-tab="dashboard" class="active">Dashboard</a>
     <a data-tab="queue">Review Queue</a>
     <a data-tab="violations">Violations</a>
+    <a data-tab="web">Web Controls</a>
+    <a data-tab="integrity">Integrity</a>
     <a data-tab="audit">Audit Log</a>
   </nav>
   <main>
@@ -70,6 +72,49 @@
         <button id="v-btn" style="margin-top:10px">Assess violation</button>
         <div class="msg" id="v-msg"></div>
       </section>
+    </div>
+    <div id="tab-web" class="hide">
+      <section><h2>Accountability System</h2><div id="w-integrity" class="sub">Loading…</div></section>
+      <section><h2>NextDNS</h2><div id="w-status"></div>
+        <details style="margin-top:10px"><summary class="sub">Bind a profile to a NextDNS profile id</summary>
+          <label>Profile</label><select id="w-bind-label"><option>RAY-PIXEL</option><option>HOME-ROUTER</option></select>
+          <label>NextDNS profile id</label><input id="w-bind-id" placeholder="e.g. abc123" />
+          <button id="w-bind-btn" style="margin-top:8px">Verify &amp; bind</button>
+        </details>
+      </section>
+      <section><h2>Access Requests</h2><div id="w-requests"></div></section>
+      <section><h2>Web Controls</h2><div id="w-controls"></div>
+        <details style="margin-top:12px"><summary class="sub">Add control</summary>
+          <label>Action</label><select id="w-kind"><option value="block">BLOCK</option><option value="allow">ALLOW (allowlist)</option><option value="monitor">MONITOR (no filtering change)</option></select>
+          <label>Target type</label><select id="w-ttype"><option value="DOMAIN">Domain (e.g. doordash.com — includes subdomains)</option><option value="SERVICE">NextDNS service id (e.g. reddit, tiktok) — block only</option></select>
+          <label>Target</label><input id="w-target" placeholder="doordash.com" />
+          <label>Display name</label><input id="w-name" placeholder="DoorDash" />
+          <label>Profiles</label>
+          <div><label style="display:inline"><input type="checkbox" id="w-p-pixel" checked style="width:auto"> RAY-PIXEL</label>
+               <label style="display:inline;margin-left:14px"><input type="checkbox" id="w-p-home" checked style="width:auto"> HOME-ROUTER</label></div>
+          <button id="w-add-btn" style="margin-top:8px">Add control</button>
+        </details>
+      </section>
+      <section><h2>Filtering Settings</h2><div id="w-filtering"></div></section>
+      <section><h2>Web Controls History</h2><div id="w-history"></div></section>
+      <div class="msg" id="w-msg"></div>
+    </div>
+    <div id="tab-integrity" class="hide">
+      <section><h2>Accountability System</h2><div id="i-overall"></div><div id="i-components"></div>
+        <button class="sec" id="i-refresh" style="margin-top:10px">Refresh</button>
+        <button class="sec" id="i-sweep" style="margin-top:10px">Run integrity check now</button></section>
+      <section><h2>Incidents</h2><div id="i-incidents"></div></section>
+      <section><h2>Authorized Windows</h2>
+        <div class="sub" style="font-size:12px">Prior AP approval to interrupt monitoring (e.g. troubleshooting). Interruptions inside a window are still recorded, but close without review if restored before it ends.</div>
+        <div id="i-exemptions" style="margin-top:8px"></div>
+        <details style="margin-top:10px"><summary class="sub">Authorize a window</summary>
+          <label>Component</label><select id="i-ex-comp"><option>PRIVATE_DNS</option><option>PHONE_HEARTBEAT</option><option>ALL</option></select>
+          <label>Duration (minutes)</label><input id="i-ex-min" type="number" value="30" />
+          <label>Reason (required)</label><input id="i-ex-reason" />
+          <button id="i-ex-btn" style="margin-top:8px">Authorize</button>
+        </details>
+      </section>
+      <div class="msg" id="i-msg"></div>
     </div>
     <div id="tab-audit" class="hide">
       <section><h2>Audit Log (latest 500)</h2><button class="sec" id="audit-refresh">Refresh</button><pre id="audit"></pre></section>
@@ -100,15 +145,18 @@ $('loginBtn').onclick = async () => {
 
 document.querySelectorAll('nav a').forEach(a => a.onclick = () => {
   document.querySelectorAll('nav a').forEach(x=>x.classList.remove('active')); a.classList.add('active');
-  ['dashboard','queue','violations','audit'].forEach(t=>$('tab-'+t).classList.toggle('hide', t!==a.dataset.tab));
+  ['dashboard','queue','violations','web','integrity','audit'].forEach(t=>$('tab-'+t).classList.toggle('hide', t!==a.dataset.tab));
   if(a.dataset.tab==='audit') loadAudit();
+  if(a.dataset.tab==='web') loadWeb();
+  if(a.dataset.tab==='integrity') loadIntegrity();
 });
 
 async function loadDashboard(){
   const d = await api('/ap/dashboard');
   $('dash').innerHTML = Object.entries({
     'Awaiting review':d.awaitingReview,'Open deficiencies':d.openDeficiencies,'Open violations':d.openViolations,
-    'Late':d.lateSubmissions,'Missed':d.missed
+    'Late':d.lateSubmissions,'Missed':d.missed,
+    'Integrity interrupted':d.integrityInterrupted,'Integrity review':d.integrityReviewRequired
   }).map(([l,n])=>`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
 }
 
@@ -139,6 +187,115 @@ $('v-btn').onclick = async () => {
     $('v-msg').className='msg ok'; $('v-msg').innerHTML='Violation assessed: '+r.violationId+(r.warnings?.length?'<br><span class="warn">'+r.warnings.join(' ')+'</span>':'');
   } catch(e){ $('v-msg').className='msg err'; $('v-msg').textContent=e.message; }
 };
+
+// ---- Web Controls (NextDNS) ------------------------------------------------
+const esc=(v)=>String(v??'').replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let wtz='America/New_York';
+const wt=(iso)=>iso?new Date(iso).toLocaleTimeString([], {timeZone:wtz,hour:'numeric',minute:'2-digit'}):'—';
+const wdt=(iso)=>iso?new Date(iso).toLocaleString([], {timeZone:wtz,month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'—';
+const wmsg=(t,ok)=>{ $('w-msg').className='msg '+(ok?'ok':'err'); $('w-msg').textContent=t; };
+const PROFILE_HEAD={ 'RAY-PIXEL':'RAY-PIXEL ACTIVITY · participant device', 'HOME-ROUTER':'HOME NETWORK ACTIVITY · shared — not attributable to Micheal' };
+
+async function wcall(path, body, method='POST'){
+  try { const r = await api('/ap/web-controls'+path,{method,body:JSON.stringify(body||{})}); await loadWeb(); return r; }
+  catch(e){ wmsg('Failed: '+e.message,false); }
+}
+
+async function loadWeb(){
+  try {
+    const [st, integ, wc, hist] = await Promise.all([
+      api('/ap/web-controls/status'), api('/ap/web-controls/integrity'), api('/ap/web-controls'), api('/ap/web-controls/history?limit=100')]);
+    wtz = wc.timeZone;
+    $('w-integrity').innerHTML = `<table><tbody>${integ.components.map(c=>`<tr><td>${esc(c.component)}</td><td>${badge(c.status)}</td></tr>`).join('')}</tbody></table>
+      <div style="margin-top:10px;font-weight:600">${esc(integ.summary)}</div>
+      <div class="sub" style="font-size:12px">Missing DNS activity alone is not treated as a bypass. Loss of monitoring does not suspend the underlying accountability requirement.</div>`;
+    $('w-status').innerHTML = `<div style="font-family:var(--mono);font-size:18px;font-weight:600">${esc(st.overall.replace(/_/g,' '))}
+        <span class="sub" style="font-size:12px">· integration ${esc(st.integration)}</span></div>
+      <table style="margin-top:8px"><thead><tr><th>Profile</th><th>Status</th><th>Last DNS query</th><th>NextDNS id</th></tr></thead><tbody>${
+        st.profiles.map(p=>`<tr><td><b>${esc(p.label)}</b><div class="sub" style="font-size:11px">${esc(PROFILE_HEAD[p.label]||'')}</div></td>
+          <td>${badge(p.status)}<div class="sub" style="font-size:11px">${esc(p.detail)}</div></td><td>${wdt(p.lastQueryAt)}</td><td><code>${esc(p.nextdnsProfileId||'unbound')}</code></td></tr>`).join('')}</tbody></table>`;
+    $('w-requests').innerHTML = wc.pendingRequests.length ? `<table><thead><tr><th>Service</th><th>Requested</th><th>Reason</th><th>Actions</th></tr></thead><tbody>${
+      wc.pendingRequests.map(r=>`<tr><td><b>${esc(r.displayName)}</b><div class="sub">${esc(r.target)}</div></td>
+        <td>${r.requestedMinutes} min<div class="sub">${wdt(r.requestedAt)}</div></td><td>${esc(r.reason)}</td>
+        <td><button onclick="wApprove('${r.id}')">Approve</button>
+            <button class="sec" onclick="wApproveDiff('${r.id}',${r.requestedMinutes})">Approve w/ different duration</button>
+            <button class="bad" onclick="wDeny('${r.id}')">Deny</button></td></tr>`).join('')}</tbody></table>` : '<div class="sub">No pending requests.</div>';
+    $('w-controls').innerHTML = wc.controls.length ? `<table><thead><tr><th>Control</th><th>Status</th><th>Profiles</th><th>Sync</th><th>Actions</th></tr></thead><tbody>${
+      wc.controls.map(c=>{
+        const status = c.kind==='BLOCK' ? (c.state==='TEMPORARILY_ALLOWED' ? `TEMPORARILY ALLOWED · expires ${wt(c.activeGrant?.expiresAt)}` : 'BLOCKED')
+          : c.kind==='ALLOW' ? 'ALLOWED' : 'MONITORED';
+        const acts = [
+          c.kind==='BLOCK'&&c.state==='ACTIVE' ? `<button onclick="wGrant('${c.id}')">Grant access</button>` : '',
+          c.state==='TEMPORARILY_ALLOWED' ? `<button onclick="wRestore('${c.id}')">Restore now</button>` : '',
+          `<button class="sec" onclick="wRemove('${c.id}')">Remove</button>`].join(' ');
+        return `<tr><td><b>${esc(c.displayName)}</b><div class="sub">${esc(c.targetType==='SERVICE'?'service: ':'')}${esc(c.target)}</div></td>
+          <td><span class="badge">${status}</span></td><td class="sub">${c.profiles.map(esc).join('<br>')}</td>
+          <td>${badge(c.syncStatus)}${c.lastSyncError?`<div class="warn">${esc(c.lastSyncError)}</div>`:''}</td><td>${acts}</td></tr>`;}).join('')}</tbody></table>` : '<div class="sub">No controls yet.</div>';
+    $('w-filtering').innerHTML = st.profiles.map(p=> p.filtering ? `<div style="margin-bottom:10px"><b>${esc(p.label)}</b> ${
+      [['safeSearch','SafeSearch'],['youtubeRestrictedMode','YouTube Restricted Mode'],['blockBypass','Block bypass methods (VPN/proxy/DoH)']].map(([k,l])=>
+        `<label style="display:block"><input type="checkbox" style="width:auto" ${p.filtering[k]?'checked':''} onchange="wFilter('${p.label}','${k}',this.checked)"> ${l}</label>`).join('')}</div>`
+      : `<div class="sub"><b>${esc(p.label)}</b>: unavailable (${esc(p.status.replace(/_/g,' '))})</div>`).join('');
+    $('w-history').innerHTML = hist.length ? `<table><tbody>${hist.map(h=>`<tr><td class="sub" style="white-space:nowrap">${wdt(h.serverTimestamp)}</td>
+      <td>${esc(h.reason)}</td><td class="sub">${esc(h.actorRole)}<br>${esc(h.mode||'')}</td></tr>`).join('')}</tbody></table>` : '<div class="sub">No history.</div>';
+  } catch(e){ wmsg('Failed to load web controls: '+e.message,false); }
+}
+window.wApprove=(id)=>wcall(`/requests/${id}/approve`,{});
+window.wApproveDiff=(id,req)=>{ const m=parseInt(prompt('Approved duration (minutes):',String(req)),10); if(m) wcall(`/requests/${id}/approve`,{minutes:m}); };
+window.wDeny=(id)=>{ const note=prompt('Note to participant (optional):'); if(note!==null) wcall(`/requests/${id}/deny`,{note}); };
+window.wGrant=(id)=>{ const m=parseInt(prompt('Grant access for how many minutes?','30'),10); if(m) wcall(`/controls/${id}/grant`,{minutes:m}); };
+window.wRestore=(id)=>wcall(`/controls/${id}/restore`,{reason:'Ended early by AP'});
+window.wRemove=(id)=>{ const reason=prompt('Permanently remove this control? Reason (required):'); if(reason) wcall(`/controls/${id}/remove`,{reason}); };
+window.wFilter=(label,key,val)=>wcall(`/profiles/${label}/filtering`,{settings:{[key]:val}},'PATCH');
+$('w-bind-btn').onclick=()=>wcall(`/profiles/${$('w-bind-label').value}`,{nextdnsProfileId:$('w-bind-id').value.trim()},'PUT');
+$('w-add-btn').onclick=()=>{
+  const profiles=[...($('w-p-pixel').checked?['RAY-PIXEL']:[]),...($('w-p-home').checked?['HOME-ROUTER']:[])];
+  wcall('/'+$('w-kind').value,{targetType:$('w-ttype').value,target:$('w-target').value,displayName:$('w-name').value,profiles});
+};
+
+// ---- Integrity (Phase 5) ------------------------------------------------------
+const imsg=(t,ok)=>{ $('i-msg').className='msg '+(ok?'ok':'err'); $('i-msg').textContent=t; };
+const plural=(n,w)=>`${n} ${w}${n===1?'':'s'}`;
+async function loadIntegrity(){
+  try {
+    const [s, wc] = await Promise.all([api('/ap/integrity'), api('/ap/web-controls')]);
+    wtz = wc.timeZone;
+    $('i-overall').innerHTML = `<div style="font-family:var(--mono);font-size:20px;font-weight:700">${esc(s.overall)}</div>
+      <div style="font-weight:600;margin:4px 0 10px">${esc(s.summary)}</div>`;
+    $('i-components').innerHTML = `<table><thead><tr><th>Component</th><th>Status</th><th>Last verified</th></tr></thead><tbody>${
+      s.components.map(c=>`<tr><td>${esc(c.component)}</td><td>${badge(c.status)}</td><td class="sub">${wdt(c.lastVerifiedAt)}</td></tr>`).join('')}</tbody></table>
+      <div class="sub" style="font-size:12px;margin-top:8px">Absence of DNS traffic alone is not treated as a bypass. Loss of monitoring does not suspend the underlying accountability requirement.</div>`;
+    $('i-incidents').innerHTML = s.incidents.length ? s.incidents.map(i=>`
+      <div style="border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px">
+        <div style="font-weight:700">${esc(i.title)} <span class="badge">${esc(i.severity)}</span></div>
+        <table style="margin-top:6px"><tbody>
+          <tr><td>Last verified active</td><td>${wdt(i.lastVerifiedAt)}</td></tr>
+          <tr><td>Failure detected</td><td>${wdt(i.detectedAt)}</td></tr>
+          <tr><td>Restored</td><td>${i.restoredAt?wdt(i.restoredAt):'<b>NOT RESTORED</b>'}</td></tr>
+          <tr><td>Interruption</td><td>${plural(i.interruptionMinutes,'minute')}${i.maxWindowMinutes!=null?` <span class="sub">(at most ${plural(i.maxWindowMinutes,'minute')} since last verification)</span>`:''}</td></tr>
+          <tr><td>Status</td><td><b>${esc(i.statusLabel)}</b></td></tr>
+        </tbody></table>
+        <div class="sub" style="margin-top:6px">${esc(i.detail)}${i.restoreDetail?' — '+esc(i.restoreDetail):''}</div>
+        ${i.exemptionId?'<div class="sub">Inside an AP-authorized window.</div>':''}
+        ${i.participantExplanation?`<div style="margin-top:6px"><b>Participant explanation:</b> ${esc(i.participantExplanation)} <span class="sub">${wdt(i.participantExplainedAt)}</span></div>`:''}
+        ${i.status==='REVIEWED'?`<div style="margin-top:6px"><b>AP determination:</b> ${esc(i.determination.replace(/_/g,' '))} — ${esc(i.reviewNote)} <span class="sub">${wdt(i.reviewedAt)}</span></div>`:''}
+        ${i.status==='AP_REVIEW_REQUIRED'||i.status==='CLOSED'?`<div style="margin-top:8px">
+          <select id="det-${i.id}" style="width:auto"><option value="TECHNICAL_FAILURE">Technical failure</option><option value="AUTHORIZED_EXCEPTION">Authorized exception (safety / emergency / recovery)</option>
+            <option value="UNAUTHORIZED_INTERRUPTION">Unauthorized interruption</option><option value="INCONCLUSIVE">Inconclusive</option></select>
+          <input id="note-${i.id}" placeholder="Review note (required)" style="margin-top:6px" />
+          <button style="margin-top:6px" onclick="iReview('${i.id}')">Record determination</button>
+          <div class="sub" style="font-size:11px">An "unauthorized interruption" determination does not assess a consequence. Use Violations if one is warranted.</div></div>`:''}
+      </div>`).join('') : '<div class="sub">No incidents recorded.</div>';
+    $('i-exemptions').innerHTML = s.activeExemptions.length ? `<table><tbody>${s.activeExemptions.map(e=>`<tr><td>${esc(e.component)}</td>
+      <td>until ${wdt(e.endsAt)}</td><td class="sub">${esc(e.reason)}</td><td><button class="sec" onclick="iRevoke('${e.id}')">End now</button></td></tr>`).join('')}</tbody></table>`
+      : '<div class="sub">No active windows.</div>';
+  } catch(e){ imsg('Failed to load integrity: '+e.message,false); }
+}
+async function icall(path, body){ try { await api('/ap/integrity'+path,{method:'POST',body:JSON.stringify(body||{})}); imsg('Saved.',true); loadIntegrity(); } catch(e){ imsg('Failed: '+e.message,false); } }
+window.iReview=(id)=>icall(`/incidents/${id}/review`,{determination:$('det-'+id).value,note:$('note-'+id).value});
+window.iRevoke=(id)=>icall(`/exemptions/${id}/revoke`);
+$('i-ex-btn').onclick=()=>icall('/exemptions',{component:$('i-ex-comp').value,minutes:parseInt($('i-ex-min').value,10),reason:$('i-ex-reason').value});
+$('i-refresh').onclick=loadIntegrity;
+$('i-sweep').onclick=()=>icall('/sweep');
 
 async function loadAudit(){ const a = await api('/ap/audit'); $('audit').textContent = JSON.stringify(a, null, 2); }
 $('audit-refresh').onclick = loadAudit;

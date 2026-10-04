@@ -20,7 +20,7 @@ cp ../.env.example .env      # set JWT_SECRET
 npm install
 npm run seed                 # demo project, users, sample days
 npm run dev                  # http://localhost:3000
-npm test                     # 46 tests
+npm test                     # 75 tests
 ```
 
 Then open:
@@ -31,6 +31,8 @@ Then open:
 | AP portal | http://localhost:3000/portal/ | `ap@michealrayberry.com` / `ap-dev-pass` |
 | Participant client | http://localhost:3000/app/ | `participant@michealrayberry.com` / `participant-dev-pass` |
 | Public API | http://localhost:3000/public/status | — |
+
+For the Web Controls tab without a real NextDNS account: `NEXTDNS_MODE=simulated npm run dev`.
 
 _(Demo credentials are development-only — rotate before production.)_
 
@@ -52,12 +54,15 @@ server/            Backend, compliance engine, public API (TypeScript, runnable,
   src/config.ts      Versioned rule schema + seed configuration (§28)
   src/services/*     Submission, AP review, projects/config, public projection, export
   src/routes/*       /auth /participant /ap /public
-  test/*             46 tests incl. the acceptance-criteria sequence
+  test/*             75 tests incl. the acceptance-criteria sequence
 web/
   public-record/     Read-only public site (§14)
   portal/            AP administration portal (§8)
   participant/       Participant web client (runnable stand-in for the native app)
   integration/       Embeddable status widget for michealrayberry.com (§5.5)
+server/src/nextdns/  NextDNS gateway (server-side key, fixed operations) + model
+                     Web Controls: AP-administered filtering, temporary access
+                     with automatic restoration, integrity status (docs/NEXTDNS.md)
 android/             Native participant client source (Kotlin/Compose/CameraX/Room/WorkManager)
                      Server-anchored countdown, resumable uploads, guided recording.
                      Not compiled here (no Android SDK) — see android/README.md
@@ -90,4 +95,5 @@ docs/                Architecture, ERD, API, privacy, deployment, guides, checkl
 [Deployment / backup / restore](docs/DEPLOYMENT.md) ·
 [Participant guide](docs/PARTICIPANT_GUIDE.md) ·
 [AP guide](docs/AP_GUIDE.md) ·
-[Release & Play checklists](docs/RELEASE_CHECKLIST.md)
+[Release & Play checklists](docs/RELEASE_CHECKLIST.md) ·
+[NextDNS / Web Controls](docs/NEXTDNS.md)

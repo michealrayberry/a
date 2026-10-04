@@ -5,6 +5,8 @@ import com.michealrayberry.console.data.remote.dto.EvidenceRequest
 import com.michealrayberry.console.data.remote.dto.EvidenceResponse
 import com.michealrayberry.console.data.remote.dto.ExternalLinkRequest
 import com.michealrayberry.console.data.remote.dto.ExternalLinkResponse
+import com.michealrayberry.console.data.remote.dto.HeartbeatRequest
+import com.michealrayberry.console.data.remote.dto.HeartbeatResponse
 import com.michealrayberry.console.data.remote.dto.LoginRequest
 import com.michealrayberry.console.data.remote.dto.LoginResponse
 import com.michealrayberry.console.data.remote.dto.NoticeDto
@@ -49,4 +51,8 @@ interface ApiService {
 
     @POST("participant/violations/{id}/acknowledge")
     suspend fun acknowledgeViolation(@Path("id") id: String): AckResponse
+
+    /** Monitoring-integrity heartbeat (Private DNS state, network, recording readiness). */
+    @POST("participant/integrity/heartbeat")
+    suspend fun heartbeat(@Body body: HeartbeatRequest): HeartbeatResponse
 }

@@ -4,6 +4,7 @@ import com.michealrayberry.console.data.remote.ApiService
 import com.michealrayberry.console.data.remote.TokenStore
 import com.michealrayberry.console.data.remote.dto.LoginRequest
 import com.michealrayberry.console.domain.Identity
+import com.michealrayberry.console.work.HeartbeatScheduler
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
@@ -21,6 +22,7 @@ import javax.inject.Singleton
 class AuthRepository @Inject constructor(
     private val api: ApiService,
     private val tokenStore: TokenStore,
+    private val heartbeat: HeartbeatScheduler,
 ) {
     /** Emits the current identity, or null when signed out. */
     val identity: Flow<Identity?> = tokenStore.session.map { session ->
@@ -37,6 +39,7 @@ class AuthRepository @Inject constructor(
             displayName = response.user.displayName,
             role = response.user.role,
         )
+        heartbeat.beatNow() // report integrity state as soon as there is a session
         Identity(response.user.id, response.user.displayName, response.user.role)
     }
 
