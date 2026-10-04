@@ -101,6 +101,40 @@ The public API **never** exposes user ids, emails, device ids, AP identity,
 internal notes, raw storage paths, auth claims, private evidence, or internal
 audit metadata. It only selects rows with `publicStatus IN ('PUBLIC','UNLISTED')`.
 
+## Web Controls / NextDNS
+
+Full design: [`NEXTDNS.md`](./NEXTDNS.md). AP routes need the `AP` role, and
+participant routes need the `PARTICIPANT` role. AP routes accept `?projectId=`
+and default to the single active project.
+
+| Method & path | Body | Notes |
+|---|---|---|
+| `GET /ap/web-controls` | — | Controls (with any `activeGrant`), pending requests, project `timeZone` |
+| `GET /ap/web-controls/status` | — | `{ integration: LIVE\|SIMULATED\|NOT_CONFIGURED, overall, profiles[] }` |
+| `GET /ap/web-controls/integrity` | — | Accountability-system components and summary |
+| `GET /ap/web-controls/history` | — | Web-control audit entries with `mode` (MANUAL/AUTOMATIC) and `target` |
+| `PUT /ap/web-controls/profiles/:label` | `{ nextdnsProfileId }` | `label` is `RAY-PIXEL` or `HOME-ROUTER`; the id is verified with NextDNS |
+| `PATCH /ap/web-controls/profiles/:label/filtering` | `{ settings: { safeSearch?, youtubeRestrictedMode?, blockBypass? } }` | Other keys return `400` |
+| `POST /ap/web-controls/block` | `{ target, targetType?: DOMAIN\|SERVICE, displayName?, profiles? }` | `profiles` defaults to both |
+| `POST /ap/web-controls/allow` | `{ target, displayName?, profiles? }` | Allowlist |
+| `POST /ap/web-controls/monitor` | `{ target, displayName?, profiles? }` | Portal-side only |
+| `POST /ap/web-controls/controls/:id/remove` | `{ reason }` | Reason required |
+| `POST /ap/web-controls/controls/:id/grant` | `{ minutes }` | 1–1440 |
+| `POST /ap/web-controls/controls/:id/restore` | `{ reason? }` | Ends access early |
+| `POST /ap/web-controls/requests/:id/approve` | `{ minutes?, note? }` | Omit `minutes` to approve the requested duration |
+| `POST /ap/web-controls/requests/:id/deny` | `{ note? }` | |
+| `POST /ap/web-controls/sweep` | — | Expire grants and retry sync (also runs on a schedule) |
+| `GET /participant/web-controls` | — | Restrictions (BLOCK only) and the participant's own requests |
+| `POST /participant/web-controls/requests` | `{ controlId, minutes, reason }` | One pending request per control |
+| `POST /participant/web-controls/requests/:id/withdraw` | — | |
+
+Write responses include `syncStatus` (`IN_SYNC` / `PENDING` / `SYNC_FAILED`).
+`SYNC_FAILED` means the policy is recorded but NextDNS has not accepted it yet;
+the sweep keeps retrying. `503 nextdns_not_configured` is returned when no API
+key is configured. `409` means a conflicting state, such as a duplicate control,
+an unbound profile, or a request that is not pending. `502` means NextDNS was
+unreachable during a synchronous check.
+
 ## Errors
 
 `400` validation/illegal-transition, `401` unauthenticated/invalid token,

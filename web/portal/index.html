@@ -50,6 +50,7 @@
     <a data-tab="dashboard" class="active">Dashboard</a>
     <a data-tab="queue">Review Queue</a>
     <a data-tab="violations">Violations</a>
+    <a data-tab="web">Web Controls</a>
     <a data-tab="audit">Audit Log</a>
   </nav>
   <main>
@@ -70,6 +71,32 @@
         <button id="v-btn" style="margin-top:10px">Assess violation</button>
         <div class="msg" id="v-msg"></div>
       </section>
+    </div>
+    <div id="tab-web" class="hide">
+      <section><h2>Accountability System</h2><div id="w-integrity" class="sub">Loading…</div></section>
+      <section><h2>NextDNS</h2><div id="w-status"></div>
+        <details style="margin-top:10px"><summary class="sub">Bind a profile to a NextDNS profile id</summary>
+          <label>Profile</label><select id="w-bind-label"><option>RAY-PIXEL</option><option>HOME-ROUTER</option></select>
+          <label>NextDNS profile id</label><input id="w-bind-id" placeholder="e.g. abc123" />
+          <button id="w-bind-btn" style="margin-top:8px">Verify &amp; bind</button>
+        </details>
+      </section>
+      <section><h2>Access Requests</h2><div id="w-requests"></div></section>
+      <section><h2>Web Controls</h2><div id="w-controls"></div>
+        <details style="margin-top:12px"><summary class="sub">Add control</summary>
+          <label>Action</label><select id="w-kind"><option value="block">BLOCK</option><option value="allow">ALLOW (allowlist)</option><option value="monitor">MONITOR (no filtering change)</option></select>
+          <label>Target type</label><select id="w-ttype"><option value="DOMAIN">Domain (e.g. doordash.com — includes subdomains)</option><option value="SERVICE">NextDNS service id (e.g. reddit, tiktok) — block only</option></select>
+          <label>Target</label><input id="w-target" placeholder="doordash.com" />
+          <label>Display name</label><input id="w-name" placeholder="DoorDash" />
+          <label>Profiles</label>
+          <div><label style="display:inline"><input type="checkbox" id="w-p-pixel" checked style="width:auto"> RAY-PIXEL</label>
+               <label style="display:inline;margin-left:14px"><input type="checkbox" id="w-p-home" checked style="width:auto"> HOME-ROUTER</label></div>
+          <button id="w-add-btn" style="margin-top:8px">Add control</button>
+        </details>
+      </section>
+      <section><h2>Filtering Settings</h2><div id="w-filtering"></div></section>
+      <section><h2>Web Controls History</h2><div id="w-history"></div></section>
+      <div class="msg" id="w-msg"></div>
     </div>
     <div id="tab-audit" class="hide">
       <section><h2>Audit Log (latest 500)</h2><button class="sec" id="audit-refresh">Refresh</button><pre id="audit"></pre></section>
@@ -100,8 +127,9 @@ $('loginBtn').onclick = async () => {
 
 document.querySelectorAll('nav a').forEach(a => a.onclick = () => {
   document.querySelectorAll('nav a').forEach(x=>x.classList.remove('active')); a.classList.add('active');
-  ['dashboard','queue','violations','audit'].forEach(t=>$('tab-'+t).classList.toggle('hide', t!==a.dataset.tab));
+  ['dashboard','queue','violations','web','audit'].forEach(t=>$('tab-'+t).classList.toggle('hide', t!==a.dataset.tab));
   if(a.dataset.tab==='audit') loadAudit();
+  if(a.dataset.tab==='web') loadWeb();
 });
 
 async function loadDashboard(){
@@ -138,6 +166,70 @@ $('v-btn').onclick = async () => {
     const r = await api('/ap/violations',{method:'POST',body:JSON.stringify(body)});
     $('v-msg').className='msg ok'; $('v-msg').innerHTML='Violation assessed: '+r.violationId+(r.warnings?.length?'<br><span class="warn">'+r.warnings.join(' ')+'</span>':'');
   } catch(e){ $('v-msg').className='msg err'; $('v-msg').textContent=e.message; }
+};
+
+// ---- Web Controls (NextDNS) ------------------------------------------------
+const esc=(v)=>String(v??'').replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let wtz='America/New_York';
+const wt=(iso)=>iso?new Date(iso).toLocaleTimeString([], {timeZone:wtz,hour:'numeric',minute:'2-digit'}):'—';
+const wdt=(iso)=>iso?new Date(iso).toLocaleString([], {timeZone:wtz,month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'—';
+const wmsg=(t,ok)=>{ $('w-msg').className='msg '+(ok?'ok':'err'); $('w-msg').textContent=t; };
+const PROFILE_HEAD={ 'RAY-PIXEL':'RAY-PIXEL ACTIVITY · participant device', 'HOME-ROUTER':'HOME NETWORK ACTIVITY · shared — not attributable to Micheal' };
+
+async function wcall(path, body, method='POST'){
+  try { const r = await api('/ap/web-controls'+path,{method,body:JSON.stringify(body||{})}); await loadWeb(); return r; }
+  catch(e){ wmsg('Failed: '+e.message,false); }
+}
+
+async function loadWeb(){
+  try {
+    const [st, integ, wc, hist] = await Promise.all([
+      api('/ap/web-controls/status'), api('/ap/web-controls/integrity'), api('/ap/web-controls'), api('/ap/web-controls/history?limit=100')]);
+    wtz = wc.timeZone;
+    $('w-integrity').innerHTML = `<table><tbody>${integ.components.map(c=>`<tr><td>${esc(c.component)}</td><td>${badge(c.status)}</td></tr>`).join('')}</tbody></table>
+      <div style="margin-top:10px;font-weight:600">${esc(integ.summary)}</div>
+      <div class="sub" style="font-size:12px">Missing DNS activity alone is not treated as a bypass. Loss of monitoring does not suspend the underlying accountability requirement.</div>`;
+    $('w-status').innerHTML = `<div style="font-family:var(--mono);font-size:18px;font-weight:600">${esc(st.overall.replace(/_/g,' '))}
+        <span class="sub" style="font-size:12px">· integration ${esc(st.integration)}</span></div>
+      <table style="margin-top:8px"><thead><tr><th>Profile</th><th>Status</th><th>Last DNS query</th><th>NextDNS id</th></tr></thead><tbody>${
+        st.profiles.map(p=>`<tr><td><b>${esc(p.label)}</b><div class="sub" style="font-size:11px">${esc(PROFILE_HEAD[p.label]||'')}</div></td>
+          <td>${badge(p.status)}<div class="sub" style="font-size:11px">${esc(p.detail)}</div></td><td>${wdt(p.lastQueryAt)}</td><td><code>${esc(p.nextdnsProfileId||'unbound')}</code></td></tr>`).join('')}</tbody></table>`;
+    $('w-requests').innerHTML = wc.pendingRequests.length ? `<table><thead><tr><th>Service</th><th>Requested</th><th>Reason</th><th>Actions</th></tr></thead><tbody>${
+      wc.pendingRequests.map(r=>`<tr><td><b>${esc(r.displayName)}</b><div class="sub">${esc(r.target)}</div></td>
+        <td>${r.requestedMinutes} min<div class="sub">${wdt(r.requestedAt)}</div></td><td>${esc(r.reason)}</td>
+        <td><button onclick="wApprove('${r.id}')">Approve</button>
+            <button class="sec" onclick="wApproveDiff('${r.id}',${r.requestedMinutes})">Approve w/ different duration</button>
+            <button class="bad" onclick="wDeny('${r.id}')">Deny</button></td></tr>`).join('')}</tbody></table>` : '<div class="sub">No pending requests.</div>';
+    $('w-controls').innerHTML = wc.controls.length ? `<table><thead><tr><th>Control</th><th>Status</th><th>Profiles</th><th>Sync</th><th>Actions</th></tr></thead><tbody>${
+      wc.controls.map(c=>{
+        const status = c.kind==='BLOCK' ? (c.state==='TEMPORARILY_ALLOWED' ? `TEMPORARILY ALLOWED · expires ${wt(c.activeGrant?.expiresAt)}` : 'BLOCKED')
+          : c.kind==='ALLOW' ? 'ALLOWED' : 'MONITORED';
+        const acts = [
+          c.kind==='BLOCK'&&c.state==='ACTIVE' ? `<button onclick="wGrant('${c.id}')">Grant access</button>` : '',
+          c.state==='TEMPORARILY_ALLOWED' ? `<button onclick="wRestore('${c.id}')">Restore now</button>` : '',
+          `<button class="sec" onclick="wRemove('${c.id}')">Remove</button>`].join(' ');
+        return `<tr><td><b>${esc(c.displayName)}</b><div class="sub">${esc(c.targetType==='SERVICE'?'service: ':'')}${esc(c.target)}</div></td>
+          <td><span class="badge">${status}</span></td><td class="sub">${c.profiles.map(esc).join('<br>')}</td>
+          <td>${badge(c.syncStatus)}${c.lastSyncError?`<div class="warn">${esc(c.lastSyncError)}</div>`:''}</td><td>${acts}</td></tr>`;}).join('')}</tbody></table>` : '<div class="sub">No controls yet.</div>';
+    $('w-filtering').innerHTML = st.profiles.map(p=> p.filtering ? `<div style="margin-bottom:10px"><b>${esc(p.label)}</b> ${
+      [['safeSearch','SafeSearch'],['youtubeRestrictedMode','YouTube Restricted Mode'],['blockBypass','Block bypass methods (VPN/proxy/DoH)']].map(([k,l])=>
+        `<label style="display:block"><input type="checkbox" style="width:auto" ${p.filtering[k]?'checked':''} onchange="wFilter('${p.label}','${k}',this.checked)"> ${l}</label>`).join('')}</div>`
+      : `<div class="sub"><b>${esc(p.label)}</b>: unavailable (${esc(p.status.replace(/_/g,' '))})</div>`).join('');
+    $('w-history').innerHTML = hist.length ? `<table><tbody>${hist.map(h=>`<tr><td class="sub" style="white-space:nowrap">${wdt(h.serverTimestamp)}</td>
+      <td>${esc(h.reason)}</td><td class="sub">${esc(h.actorRole)}<br>${esc(h.mode||'')}</td></tr>`).join('')}</tbody></table>` : '<div class="sub">No history.</div>';
+  } catch(e){ wmsg('Failed to load web controls: '+e.message,false); }
+}
+window.wApprove=(id)=>wcall(`/requests/${id}/approve`,{});
+window.wApproveDiff=(id,req)=>{ const m=parseInt(prompt('Approved duration (minutes):',String(req)),10); if(m) wcall(`/requests/${id}/approve`,{minutes:m}); };
+window.wDeny=(id)=>{ const note=prompt('Note to participant (optional):'); if(note!==null) wcall(`/requests/${id}/deny`,{note}); };
+window.wGrant=(id)=>{ const m=parseInt(prompt('Grant access for how many minutes?','30'),10); if(m) wcall(`/controls/${id}/grant`,{minutes:m}); };
+window.wRestore=(id)=>wcall(`/controls/${id}/restore`,{reason:'Ended early by AP'});
+window.wRemove=(id)=>{ const reason=prompt('Permanently remove this control? Reason (required):'); if(reason) wcall(`/controls/${id}/remove`,{reason}); };
+window.wFilter=(label,key,val)=>wcall(`/profiles/${label}/filtering`,{settings:{[key]:val}},'PATCH');
+$('w-bind-btn').onclick=()=>wcall(`/profiles/${$('w-bind-label').value}`,{nextdnsProfileId:$('w-bind-id').value.trim()},'PUT');
+$('w-add-btn').onclick=()=>{
+  const profiles=[...($('w-p-pixel').checked?['RAY-PIXEL']:[]),...($('w-p-home').checked?['HOME-ROUTER']:[])];
+  wcall('/'+$('w-kind').value,{targetType:$('w-ttype').value,target:$('w-target').value,displayName:$('w-name').value,profiles});
 };
 
 async function loadAudit(){ const a = await api('/ap/audit'); $('audit').textContent = JSON.stringify(a, null, 2); }

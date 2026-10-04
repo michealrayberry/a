@@ -59,6 +59,11 @@ surface is a projection of it.
    activations never rewrite history. → acceptance #13, #14.
 7. **No silent auto-consequence.** The deadline sweep marks MISSED/LATE and
    opens notices but never assesses a violation; only the AP does. → §9.2.
+8. **Append-only audit.** SQLite triggers reject any `UPDATE` or `DELETE` on
+   `audit_events`.
+9. **NextDNS credential boundary.** Only `nextdns/gateway.ts` holds the API key.
+   It exposes fixed, typed operations with no pass-through, and web-control
+   policy is reconciled to NextDNS rather than read from it. → `NEXTDNS.md`.
 
 ## Request flow: the canonical sequence (§29)
 

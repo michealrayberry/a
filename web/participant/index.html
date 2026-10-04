@@ -66,6 +66,14 @@
     </section>
 
     <section>
+      <h2>Web access</h2>
+      <div class="sub" style="font-size:12px;margin-bottom:8px">Restrictions are set by your Accountability Partner.
+        Temporary access must be requested and approved; it expires and is restored automatically.</div>
+      <div id="webctl"><div class="sub">Loading…</div></div>
+      <div class="msg" id="webmsg"></div>
+    </section>
+
+    <section>
       <h2>Notices</h2>
       <div id="notices"><div class="sub">None.</div></div>
     </section>
@@ -90,7 +98,7 @@ $('loginBtn').onclick = async () => {
   try {
     const r = await api('/auth/login', { method:'POST', body: JSON.stringify({ email:$('email').value, password:$('password').value }) });
     token = r.token; $('login').classList.add('hide'); $('authed').classList.remove('hide');
-    await loadToday(); loadNotices();
+    await loadToday(); loadNotices(); loadWebControls();
   } catch (e) { $('loginMsg').textContent = 'Sign-in failed: ' + e.message; }
 };
 
@@ -153,6 +161,38 @@ async function loadNotices() {
      <div class="meta">${new Date(x.issuedAt).toLocaleString()}</div><div style="margin-top:6px">${x.body}</div></div>`).join('')
     : '<div class="sub">None.</div>';
 }
+
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let web = null;
+async function loadWebControls() {
+  web = await api('/participant/web-controls');
+  const t = (iso) => new Date(iso).toLocaleTimeString([], { timeZone: web.timeZone, hour:'numeric', minute:'2-digit' });
+  const pending = new Set(web.requests.filter(r => r.status === 'PENDING').map(r => r.controlId));
+  const rows = web.restrictions.map(r => {
+    const status = r.state === 'TEMPORARILY_ALLOWED' ? `TEMPORARILY ALLOWED · expires ${t(r.expiresAt)}` : 'BLOCKED';
+    const action = r.state !== 'ACTIVE' ? '' : pending.has(r.id) ? '<span class="meta">Request pending</span>'
+      : `<button class="sec" onclick="requestAccess('${r.id}')">Request access</button>`;
+    return `<div class="req"><div class="top"><span class="name">${esc(r.displayName)}</span><span class="badge">${status}</span></div>
+      <div class="meta">${esc(r.target)}</div><div class="row" style="margin-top:8px">${action}</div></div>`;
+  }).join('') || '<div class="sub">No restrictions configured.</div>';
+  const hist = web.requests.slice(0, 10).map(r =>
+    `<div class="meta">${new Date(r.requestedAt).toLocaleString()} · ${esc(r.displayName)} · ${r.requestedMinutes} min · <b>${r.status}</b>${
+      r.approvedMinutes && r.approvedMinutes !== r.requestedMinutes ? ` (approved ${r.approvedMinutes} min)` : ''}${
+      r.decisionNote ? ' · ' + esc(r.decisionNote) : ''}${
+      r.status === 'PENDING' ? ` <a href="#" onclick="withdrawReq('${r.id}');return false">withdraw</a>` : ''}</div>`).join('');
+  $('webctl').innerHTML = rows + (hist ? '<div style="margin-top:10px"><div class="meta"><b>Your requests</b></div>' + hist + '</div>' : '');
+}
+window.requestAccess = async (controlId) => {
+  const minutes = parseInt(prompt('Requested duration in minutes:', '30'), 10); if (!minutes) return;
+  const reason = prompt('Reason (required — the AP sees this):'); if (!reason) return;
+  try { await api('/participant/web-controls/requests', { method:'POST', body: JSON.stringify({ controlId, minutes, reason }) });
+    $('webmsg').className='msg ok'; $('webmsg').textContent='Request submitted to your Accountability Partner.'; loadWebControls();
+  } catch (e) { $('webmsg').className='msg err'; $('webmsg').textContent='Failed: '+e.message; }
+};
+window.withdrawReq = async (id) => {
+  try { await api(`/participant/web-controls/requests/${id}/withdraw`, { method:'POST' }); loadWebControls(); }
+  catch (e) { $('webmsg').className='msg err'; $('webmsg').textContent='Failed: '+e.message; }
+};
 
 function startCountdown(deadlineIso) {
   const el = $('countdown');

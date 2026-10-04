@@ -7,6 +7,8 @@ import { authRouter } from './routes/authRoutes.js';
 import { participantRouter } from './routes/participant.js';
 import { apRouter } from './routes/ap.js';
 import { publicRouter } from './routes/publicApi.js';
+import { apWebControlsRouter, participantWebControlsRouter } from './routes/webControls.js';
+import { nextDnsFromEnv, type NextDnsGateway } from './nextdns/gateway.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -14,14 +16,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * Assemble the Express app. The clock is injectable so tests can pin time and
  * so scheduled runs are deterministic (blueprint §3.2, §20 time-based tests).
  */
-export function createApp(db: DB, clock: Clock = systemClock): Express {
+export function createApp(
+  db: DB,
+  clock: Clock = systemClock,
+  nextdns: NextDnsGateway | null = nextDnsFromEnv(),
+): Express {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/health', (_req, res) => res.json({ ok: true, time: clock.now().toISO() }));
 
   app.use('/auth', authRouter(db, clock));
+  app.use('/participant/web-controls', participantWebControlsRouter(db, clock));
   app.use('/participant', participantRouter(db, clock));
+  app.use('/ap/web-controls', apWebControlsRouter(db, clock, nextdns));
   app.use('/ap', apRouter(db, clock));
   app.use('/public', publicRouter(db));
 
