@@ -64,3 +64,19 @@ missed requirement.
 
 History shows every day with its status. You can export your records (PDF/CSV/
 JSON) from the Project screen.
+
+## Web controls (NextDNS)
+
+The AP administers DNS filtering on your Pixel (Private DNS profile RAY-PIXEL)
+and the home network (HOME-ROUTER). In the Web Controls portal you can see every
+control's status, **request temporary access** (service, duration, reason),
+follow your requests, view integrity status and incidents, and read the full
+audit history, including when the AP viewed DNS activity and in which mode.
+
+Rule: accountability controls must remain enabled and configured as the AP
+directs. Do not disable, replace, circumvent or materially alter one without
+prior AP approval, except when reasonably necessary for safety, emergency
+access or essential device recovery. You keep physical control of your phone.
+If you must interrupt monitoring for one of those reasons, the interruption is
+recorded, and you explain it at AP review. Loss of monitoring does not suspend
+the underlying requirement.

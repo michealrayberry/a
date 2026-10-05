@@ -1,0 +1,58 @@
+# AP-owned Cloudflare Worker for NextDNS Web Controls.
+# Deploy ONLY from the Accountability Partner's Cloudflare account.
+#
+# Secrets (never in this file, never in git):
+#   wrangler secret put NEXTDNS_API_KEY
+#   wrangler secret put ALERT_WEBHOOK_URL     # optional
+name = "mrb-web-controls"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Every minute: expire grants + restore restrictions, lapse stale requests.
+# Integrity checks run inside the same tick at the AP-configured interval.
+[triggers]
+crons = ["* * * * *"]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "web-controls"
+database_id = "REPLACE_WITH_AP_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[vars]
+ENVIRONMENT = "production"
+AUTH_MODE = "access"
+# NextDNS profile ids from the AP-owned NextDNS account (not secret, but AP-controlled).
+NEXTDNS_PROFILE_RAY_PIXEL = ""
+NEXTDNS_PROFILE_HOME_ROUTER = ""
+# Cloudflare Access (AP's Zero Trust team).
+ACCESS_TEAM_DOMAIN = ""        # e.g. "mrb-ap.cloudflareaccess.com"
+ACCESS_AUD = ""                # the Access application's AUD tag
+AP_EMAILS = ""                 # comma-separated
+PARTICIPANT_EMAILS = ""        # comma-separated
+# Hostname suffix the phone resolves for canary checks (need not resolve).
+CANARY_SUFFIX = "hb.michealrayberry.com"
+
+# Local development: `npm run dev` uses this environment
+# (`wrangler dev --env dev`), with dev-only auth that refuses non-localhost.
+[env.dev]
+[env.dev.vars]
+ENVIRONMENT = "development"
+AUTH_MODE = "dev"
+AP_EMAILS = "ap@example.test"
+PARTICIPANT_EMAILS = "participant@example.test"
+CANARY_SUFFIX = "hb.example.test"
+NEXTDNS_PROFILE_RAY_PIXEL = ""
+NEXTDNS_PROFILE_HOME_ROUTER = ""
+
+[[env.dev.d1_databases]]
+binding = "DB"
+database_name = "web-controls-dev"
+database_id = "local-dev"
+migrations_dir = "migrations"

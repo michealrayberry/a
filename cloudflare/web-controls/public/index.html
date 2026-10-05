@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<link rel="icon" href="data:," />
+<title>Web Controls — AP Portal</title>
+<style>
+  :root { --ink:#111418; --paper:#fff; --muted:#5b6470; --line:#e2e6ea; --accent:#1f4b8f; --bg:#f6f7f9;
+    --ok:#1f6b3a; --pend:#8a6d00; --bad:#8a1f1f; --warn:#8a3b00; --home:#4a3f6b;
+    --mono: ui-monospace, Menlo, Consolas, monospace; --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  * { box-sizing:border-box; } body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink);}
+  header{background:var(--ink);color:#fff;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;gap:12px;}
+  header h1{font-size:15px;margin:0;} header .sub{color:#9aa4b1;font-size:12px;}
+  .layout{display:flex;min-height:calc(100vh - 48px);}
+  nav{width:200px;background:#1b1f24;padding:12px 0;flex-shrink:0;} nav a{display:block;color:#c4ccd6;padding:9px 20px;text-decoration:none;font-size:14px;cursor:pointer;}
+  nav a.active,nav a:hover{background:#262c33;color:#fff;} main{flex:1;padding:22px;max-width:1000px;min-width:0;}
+  @media(max-width:700px){.layout{flex-direction:column;}nav{width:100%;display:flex;overflow-x:auto;}nav a{white-space:nowrap;padding:10px 14px;}main{padding:14px;}}
+  section{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:16px;}
+  section.home{border-left:4px solid var(--home);} section.pixel{border-left:4px solid var(--accent);}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 12px;}
+  h3{font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin:16px 0 8px;}
+  .table-wrap{overflow-x:auto;}
+  table{width:100%;border-collapse:collapse;font-size:13px;} th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line);vertical-align:top;}
+  th{font-size:11px;text-transform:uppercase;color:var(--muted);}
+  button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:7px 11px;font:inherit;font-size:13px;cursor:pointer;margin:2px 4px 2px 0;}
+  button.sec{background:#eef1f4;color:var(--ink);} button.bad{background:var(--bad);} button:disabled{opacity:.5;cursor:default;}
+  input,select,textarea{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;font:inherit;margin-top:3px;}
+  label{font-size:12px;color:var(--muted);display:block;margin-top:8px;}
+  .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;align-items:end;}
+  .status{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;letter-spacing:.03em;padding:2px 8px;border-radius:999px;border:1px solid currentColor;white-space:nowrap;}
+  .s-ACTIVE,.s-REPORTING,.s-BLOCKED,.s-RESTORED-ok{color:var(--ok);} .s-DEGRADED,.s-PENDING,.s-TEMPORARILY_ALLOWED{color:var(--pend);}
+  .s-INTERRUPTED,.s-FAILED{color:var(--bad);} .s-RESTORED{color:var(--warn);} .s-UNKNOWN,.s-ALLOWED,.s-ARCHIVED{color:var(--muted);}
+  .sysrow{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);font-size:14px;gap:10px;}
+  .sysrow .d{font-size:12px;color:var(--muted);}
+  .headline{font-family:var(--mono);font-weight:700;font-size:14px;margin-top:12px;padding:10px;border-radius:6px;background:#f1f3f5;}
+  .rule{font-size:12px;color:var(--muted);border-left:3px solid var(--line);padding-left:10px;margin-top:10px;}
+  .incident{border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px;}
+  .incident .t{font-family:var(--mono);font-weight:700;} .kv{display:grid;grid-template-columns:170px 1fr;gap:3px 12px;font-size:13px;margin-top:8px;}
+  .kv div:nth-child(odd){color:var(--muted);}
+  .hide{display:none;} .msg{font-size:13px;margin-top:8px;} .msg.err{color:var(--bad);} .msg.ok{color:var(--ok);}
+  .muted{color:var(--muted);font-size:12px;} .mono{font-family:var(--mono);font-size:12px;}
+  .banner{padding:10px 12px;border-radius:8px;font-size:13px;margin-bottom:12px;border:1px solid var(--line);background:#fffbe6;}
+  .token{font-family:var(--mono);background:#0e1116;color:#c8d0da;padding:10px;border-radius:6px;word-break:break-all;}
+  .notice{font-size:12px;background:#f1f3f5;border-radius:6px;padding:8px 10px;margin-bottom:10px;}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>WEB CONTROLS</h1><div class="sub">NextDNS accountability · Micheal Ray Berry Accountability Project</div></div>
+  <div id="who" class="sub"></div>
+</header>
+
+<div id="boot" style="padding:40px;text-align:center" class="muted">Loading…</div>
+
+<div id="app" class="layout hide">
+  <nav id="nav"></nav>
+  <main>
+    <div id="toast" class="msg"></div>
+
+    <!-- OVERVIEW -->
+    <div data-tab="overview">
+      <section><h2>Accountability System</h2><div id="sys"></div><div id="headline" class="headline"></div>
+        <div class="rule" id="rule1"></div><div class="rule" id="rule2"></div>
+        <div class="ap-only" style="margin-top:10px"><button class="sec" id="runChecks">Run integrity checks now</button></div>
+      </section>
+      <section><h2>NextDNS</h2><div id="nextdns"></div></section>
+      <section><h2>Web Controls</h2>
+        <div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Scope</th><th></th></tr></thead><tbody id="controls"></tbody></table></div>
+        <div class="ap-only">
+          <h3>Block domain</h3>
+          <div class="row">
+            <div><label>Domain</label><input id="b-domain" placeholder="doordash.com" /></div>
+            <div><label>Service name (optional)</label><input id="b-label" placeholder="DoorDash" /></div>
+            <div><label>Profiles</label><select id="b-profiles"><option value="both">RAY-PIXEL + HOME-ROUTER</option><option value="RAY-PIXEL">RAY-PIXEL only</option><option value="HOME-ROUTER">HOME-ROUTER only</option></select></div>
+            <div><label>NextDNS service id (optional)</label><input id="b-service" placeholder="reddit" /></div>
+          </div>
+          <label>Note</label><input id="b-note" />
+          <button id="b-btn" style="margin-top:10px">BLOCK DOMAIN</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- REQUESTS -->
+    <div data-tab="requests" class="hide">
+      <section class="participant-only"><h2>Request temporary access</h2>
+        <div class="row">
+          <div><label>Service</label><select id="r-control"></select></div>
+          <div><label>Requested duration (minutes)</label><input id="r-min" type="number" value="30" min="1" /></div>
+        </div>
+        <label>Reason (required)</label><textarea id="r-reason" rows="2"></textarea>
+        <button id="r-btn" style="margin-top:10px">Submit request</button>
+        <div class="rule">Requests the AP does not answer lapse automatically; the restriction stays in place.</div>
+      </section>
+      <section><h2>Access requests</h2><div id="requests"></div></section>
+      <section class="ap-only"><h2>Grant history</h2><div class="table-wrap"><table><thead><tr><th>Service</th><th>Granted</th><th>Duration</th><th>Expires</th><th>Status</th><th>Restriction</th></tr></thead><tbody id="grants"></tbody></table></div></section>
+    </div>
+
+    <!-- ACTIVITY -->
+    <div data-tab="activity" class="hide">
+      <section><h2>DNS activity</h2>
+        <div class="notice" id="interp"></div>
+        <div class="row">
+          <div><label>Source</label><select id="a-profile"><option value="RAY-PIXEL">RAY-PIXEL ACTIVITY (phone)</option><option value="HOME-ROUTER">HOME NETWORK ACTIVITY</option></select></div>
+          <div><label>Window</label><select id="a-from"><option value="-1h">Last hour</option><option value="-6h">Last 6 hours</option><option value="-24h" selected>Last 24 hours</option><option value="-7d">Last 7 days</option></select></div>
+          <div><button id="a-btn">VIEW ACTIVITY</button></div>
+        </div>
+        <div class="muted" style="margin-top:8px">Each view is recorded in the audit history.</div>
+      </section>
+      <section id="a-out" class="hide"><h2 id="a-heading"></h2><div class="notice" id="a-attr"></div><div id="a-mode" class="muted"></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Domain</th><th>Signal</th><th>Matched</th><th>Device</th></tr></thead><tbody id="a-rows"></tbody></table></div></section>
+    </div>
+
+    <!-- INTEGRITY -->
+    <div data-tab="integrity" class="hide">
+      <section><h2>Integrity incidents</h2><div id="incidents"></div></section>
+    </div>
+
+    <!-- POLICY -->
+    <div data-tab="policy" class="hide">
+      <section><h2>AP visibility mode</h2>
+        <div class="muted">Controls what DNS activity the portal will show. Wider visibility should be a deliberate decision; every change is audited with its reason.</div>
+        <div class="row"><div><label>Mode</label><select id="v-mode">
+          <option value="BLOCKED_EVENTS_ONLY">BLOCKED EVENTS ONLY — attempts against active restrictions</option>
+          <option value="MONITORED_DOMAINS">MONITORED DOMAINS — blocked + designated services</option>
+          <option value="ALL_DOMAINS">ALL DOMAINS — all available DNS activity</option></select></div>
+          <div><label>Reason (required)</label><input id="v-reason" /></div>
+          <div><button id="v-btn">Save visibility</button></div></div>
+      </section>
+      <section><h2>Allowlist</h2>
+        <div class="muted">Allowlisted domains override NextDNS blocklists and categories. Domains inside a web control cannot be allowlisted — use temporary access instead.</div>
+        <div id="allow"></div>
+        <div class="row"><div><label>Domain</label><input id="al-domain" /></div><div><label>Note</label><input id="al-note" /></div><div><button id="al-btn">Add to allowlist</button></div></div>
+      </section>
+      <section><h2>Monitored domains</h2>
+        <div class="muted">Surfaced in MONITORED DOMAINS activity. Monitoring never blocks anything.</div>
+        <div id="mon"></div>
+        <div class="row"><div><label>Domain</label><input id="mo-domain" /></div><div><label>Label</label><input id="mo-label" /></div><div><button id="mo-btn">Add monitored domain</button></div></div>
+      </section>
+      <section><h2>Filtering settings</h2><div id="filtering"></div></section>
+      <section><h2>Limits</h2>
+        <div class="row"><div><label>Maximum temporary access (minutes)</label><input id="l-max" type="number" /></div>
+          <div><label>Unanswered request lapses after (minutes)</label><input id="l-lapse" type="number" /></div>
+          <div><button id="l-btn">Save limits</button></div></div>
+      </section>
+    </div>
+
+    <!-- DEVICES -->
+    <div data-tab="devices" class="hide">
+      <section><h2>Phone heartbeat</h2>
+        <div class="muted">The phone app reports Private DNS state and resolves a one-time canary hostname that the Worker then looks for in RAY-PIXEL's NextDNS log. Tokens are shown once.</div>
+        <div id="devices"></div>
+        <div class="row"><div><label>Device label</label><input id="d-label" value="Ray Pixel" /></div><div><button id="d-btn">Issue heartbeat token</button></div></div>
+        <div id="d-token" class="hide" style="margin-top:10px"><div class="muted">Enter this in the phone app now. It will not be shown again.</div><div class="token" id="d-token-v"></div></div>
+      </section>
+    </div>
+
+    <!-- AUDIT -->
+    <div data-tab="audit" class="hide">
+      <section><h2>Audit history</h2><div class="muted">Append-only. Times shown in Eastern Time.</div>
+        <div class="table-wrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Event</th><th>Mode</th></tr></thead><tbody id="audit"></tbody></table></div>
+        <button class="sec" id="audit-more">Load older</button></section>
+    </div>
+  </main>
+</div>
+
+<script src="/app.js" defer></script>
+</body>
+</html>

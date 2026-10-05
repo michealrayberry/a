@@ -17,6 +17,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.michealrayberry.console.data.repo.AuthRepository
 import com.michealrayberry.console.domain.Identity
+import com.michealrayberry.console.integrity.HeartbeatLinkCard
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -67,6 +68,7 @@ fun ProjectScreen(viewModel: ProjectViewModel = hiltViewModel()) {
         } else {
             Text("Not signed in.")
         }
+        HeartbeatLinkCard()
         OutlinedButton(onClick = viewModel::signOut, modifier = Modifier.fillMaxWidth()) {
             Text("Sign out")
         }

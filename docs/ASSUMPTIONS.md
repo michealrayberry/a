@@ -80,6 +80,16 @@ call the real API.
    configuration; daily as `DAILY`. This is an extension point for richer
    recurrence without code changes.
 
+## NextDNS Web Controls
+
+Built as a separate AP-owned Cloudflare Worker with D1, tested (53 tests) and
+run under `wrangler dev`. The NextDNS API client was written against the
+documented v1 API without live access (this environment's network policy
+blocked NextDNS), so the go-live checks in [`NEXTDNS.md`](./NEXTDNS.md) §8 must
+be completed with the AP's account. The Android heartbeat worker is source
+only, not compiled. The design aims to detect interruptions, not to prevent the
+participant from controlling their own phone.
+
 ## Known limitations of the reference (post-MVP / out of scope §22)
 
 Direct YouTube/X publishing, automatic payment collection, AI visual compliance

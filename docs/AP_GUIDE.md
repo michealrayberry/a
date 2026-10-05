@@ -66,3 +66,28 @@ treat it as the system of record.
 Upload/processing failures are presented to you for determination under the
 active rules. A technical failure is **not** automatically a participant
 violation.
+
+## Web Controls (NextDNS)
+
+The separate **WEB CONTROLS** portal (Cloudflare-hosted, under your account)
+administers NextDNS. Full details are in [`NEXTDNS.md`](./NEXTDNS.md).
+
+- **Overview:** the Accountability System panel (NextDNS, Pixel profile, home
+  router, phone heartbeat, policy enforcement, Recording Assistant), the
+  profile status, and the web controls table. **BLOCK DOMAIN** adds a
+  restriction; **GRANT ACCESS** opens a timed window; **End access now**
+  restores the restriction early.
+- **Requests:** APPROVE, APPROVE WITH DIFFERENT DURATION, or DENY. Restoration
+  at expiry is automatic and confirmed against NextDNS. Unanswered requests
+  lapse and the restriction stays.
+- **Activity:** RAY-PIXEL ACTIVITY is phone-specific; HOME NETWORK ACTIVITY is
+  not attributable to Micheal. Treat DNS events as signals, not proof of
+  deliberate use. Each view is audited.
+- **Integrity:** a RESTORED incident needs your review (disposition + note).
+  Restoration does not erase the interruption. A REPORTING GAP means
+  insufficient information, not confirmed bypass.
+- **Policy:** visibility mode (changing it requires a reason), allowlist,
+  monitored domains, filtering settings, limits.
+- Make NextDNS changes **through the portal**. Changes to portal-managed
+  entries made in the NextDNS dashboard are reverted and recorded as
+  configuration drift.

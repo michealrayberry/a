@@ -28,3 +28,7 @@ android/captures/
 
 # OS
 .DS_Store
+
+# Cloudflare Worker local state
+.wrangler/
+.dev.vars

@@ -1,0 +1,2555 @@
+From 55c5c855358afa24b7f07ccb345e3714e7baff55 Mon Sep 17 00:00:00 2001
+From: Micheal Ray Berry <michealrayberry@gmail.com>
+Date: Mon, 5 Oct 2026 11:03:11 +0000
+Subject: [PATCH] Web Controls: the AP's NextDNS filter, temporary access and
+ monitoring integrity
+
+The AP's NextDNS account filters RAY-PIXEL (the phone, Android Private DNS) and
+HOME-ROUTER (the Nest Wifi). The key is a Worker secret; the console offers
+named operations only, never a passthrough.
+
+- Policy in D1, reconciled into NextDNS every tick: block, allow, remove,
+  allowlist, monitored domains, filtering settings. Managed entries changed in
+  the NextDNS dashboard are put back and kept as drift.
+- Temporary access: Micheal requests in his portal; the AP approves, approves
+  for a different time, or denies. It ends by itself (1-minute trigger), fails
+  closed, and counts as restored only when NextDNS confirms it.
+- DNS activity with AP-chosen visibility (blocked events only by default);
+  client IPs dropped; every view logged and shown to Micheal.
+- Integrity: NextDNS, Pixel profile, home router, phone (OwnTracks), policy and
+  Recording Assistant. Missing DNS alone is only degraded; interruptions need
+  evidence (browser DNS check, canary, phone online with no RAY-PIXEL DNS).
+  Incidents are kept after restoration and closed only by AP review.
+- Not a written requirement until an amendment is co-signed
+  (WEB_CONTROLS_RULE_FROM = null); proposed wording in the README.
+- Console tab, portal section, phone DNS check (public/dnscheck.js),
+  migration 0017, 31 tests.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W9gZW9x6FmawCidrSbeWYE
+---
+ .dev.vars.example                |   2 +
+ README.md                        |  91 ++++++-
+ migrations/0017_web_controls.sql | 142 +++++++++++
+ public/ap/ap.js                  | 193 ++++++++++++++-
+ public/assistant/index.html      |   2 +
+ public/dnscheck.js               |  27 ++
+ public/mrb/index.html            |   1 +
+ public/mrb/mrb.js                |  56 ++++-
+ src/api/ap.ts                    |   5 +-
+ src/api/webControls.ts           | 325 ++++++++++++++++++++++++
+ src/cron/jobs.ts                 |   5 +-
+ src/cron/schedule.ts             |   5 +
+ src/nextdns.ts                   |  87 +++++++
+ src/rules.ts                     |   5 +
+ src/webControls.ts               | 362 +++++++++++++++++++++++++++
+ src/webIntegrity.ts              | 313 +++++++++++++++++++++++
+ src/worker.ts                    |  24 ++
+ test/fixtures/nextdns.ts         |  58 +++++
+ test/worker/webcontrols.test.ts  | 410 +++++++++++++++++++++++++++++++
+ worker-configuration.d.ts        |  10 +-
+ wrangler.jsonc                   |  11 +-
+ 21 files changed, 2122 insertions(+), 12 deletions(-)
+ create mode 100644 migrations/0017_web_controls.sql
+ create mode 100644 public/dnscheck.js
+ create mode 100644 src/api/webControls.ts
+ create mode 100644 src/nextdns.ts
+ create mode 100644 src/webControls.ts
+ create mode 100644 src/webIntegrity.ts
+ create mode 100644 test/fixtures/nextdns.ts
+ create mode 100644 test/worker/webcontrols.test.ts
+
+diff --git a/.dev.vars.example b/.dev.vars.example
+index 03da5b4..98ba2ea 100644
+--- a/.dev.vars.example
++++ b/.dev.vars.example
+@@ -18,3 +18,5 @@ WITHINGS_CLIENT_ID=
+ WITHINGS_CLIENT_SECRET=
+ GOOGLE_CLIENT_ID=
+ GOOGLE_CLIENT_SECRET=
++# Web Controls: the AP's NextDNS API key (production value via wrangler secret put)
++NEXTDNS_API_KEY=
+diff --git a/README.md b/README.md
+index 7292b3c..792921e 100644
+--- a/README.md
++++ b/README.md
+@@ -66,7 +66,8 @@ GitHub ──push──▶ Actions: npm test → D1 migrations → wrangler depl
+                        ├─ Static Assets    public/ (assistant, portal, console, images, scripts)
+                        ├─ Cloudflare Stream  recordings (tus Direct Creator Uploads)
+                        ├─ Cloudflare Access  /assistant/*, /mrb/* (Micheal), /ap/* (AP); one-time PIN
+-                       └─ Postmark          email from ap@michealrayberry.com
++                       ├─ Postmark          email from ap@michealrayberry.com
++                       └─ NextDNS API       Web Controls: the AP's filter (key = Worker secret)
+ ```
+ 
+ - **Public site.** Generated from D1 by `src/build/` (ported from the former
+@@ -88,7 +89,7 @@ GitHub ──push──▶ Actions: npm test → D1 migrations → wrangler depl
+ - **AP console** (`/ap/`). Agreement execution, flag review, corrective
+   verification, overrule and §9 exceptions, supervision rulings, requests and
+   reports, updates and amendments, takedowns, rebuild and CSV export.
+-- **Scheduled jobs** (`src/cron/`). The Worker has one 5-minute cron trigger.
++- **Scheduled jobs** (`src/cron/`). The Worker has a 5-minute cron trigger and a 1-minute one that only ends temporary web access on time.
+   `schedule.ts` runs each job at its Eastern-time slot, once per slot (`job_runs`):
+ 
+   | ET | Job |
+@@ -99,6 +100,8 @@ GitHub ──push──▶ Actions: npm test → D1 migrations → wrangler depl
+   | 22:20 | Supervision check |
+   | 17:45–22:15 | Twitch poll |
+   | Hourly | Withings scale sync, corrective-deadline watch, milestone watch |
++  | Every 5 min | Web Controls: re-apply NextDNS policy, end expired access, integrity check |
++  | Every minute | Web Controls: end expired temporary access |
+   | Monday 09:00 / 09:30 | Weekly emails |
+   | 23:00 | Abandonment and completion watch |
+   | 00:10 | Rebuild and SQL backup to R2 `backups/` |
+@@ -162,6 +165,7 @@ curl -X POST -H 'Origin: http://localhost:8787' localhost:8787/api/ap/build   #
+ | `TURNSTILE_SECRET` | Observer form verification |
+ | `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` | Supervision poller (Helix) |
+ | `WITHINGS_CLIENT_ID`, `WITHINGS_CLIENT_SECRET` | Scale weight (Withings API); Micheal connects once at `/mrb/` |
++| `NEXTDNS_API_KEY` | Web Controls: the AP's NextDNS API key; never sent to a browser or returned |
+ 
+ ## Operating it
+ 
+@@ -192,6 +196,87 @@ D1 Time Travel keeps 30 days.
+ - **Restore a point in time:** `npx wrangler d1 time-travel restore mrb-record --timestamp=<ISO>`
+ - **Restore a dump into a new database:** `wrangler d1 execute <db> --file <dump>`
+ 
++## Web Controls (NextDNS)
++
++The AP's DNS filter on Micheal's phone and the home network, administered from
++the console (`/ap/` → Web Controls). AP only, never public. Code:
++`src/nextdns.ts` (client), `src/webControls.ts` (policy, temporary access,
++activity), `src/webIntegrity.ts` (monitoring), `src/api/webControls.ts`,
++`public/dnscheck.js`, migration `0017`.
++
++**Two profiles, kept apart.** RAY-PIXEL is the phone (Android Private DNS, Wi-Fi
++and cellular) and is phone-specific. HOME-ROUTER is the Google Nest Wifi: TVs,
++computers and guests use it too, so its traffic is never attributed to Micheal.
++
++**Who controls what.** The NextDNS account and its API key are the AP's. The key
++is a Worker secret: the console offers named operations (block, allow, grant,
++end, allowlist, monitor, filtering), never a passthrough to NextDNS. Micheal
++keeps physical control of his phone and router; switching Private DNS off is
++always possible. It shows as an interruption; it is not prevented.
++
++**How it behaves.**
++- D1 holds the AP's policy; every tick makes NextDNS match it. A managed entry
++  changed in the NextDNS dashboard is put back and kept as an incident (drift).
++  Entries made by hand in the dashboard are never touched.
++- Temporary access: Micheal asks in his portal (service, minutes, reason); the
++  AP approves, approves for a different time, or denies. Access ends by itself
++  within a minute of its expiry, and an expired grant never counts even before
++  that. A restriction counts as restored only when NextDNS confirms it;
++  otherwise it is retried and emailed. Unanswered requests lapse after 2 hours.
++- DNS activity: the AP chooses blocked events only (default), monitored
++  domains, or all domains; widening needs a recorded reason. Client IPs are
++  dropped. Every view is an audit event Micheal sees in his portal. A lookup
++  is a signal, never proof that a service was used.
++- Integrity: NextDNS, Pixel profile, home router, phone heartbeat (OwnTracks),
++  policy enforcement and Recording Assistant are each ACTIVE, DEGRADED,
++  INTERRUPTED or RESTORED. Missing DNS alone is only DEGRADED. INTERRUPTED needs
++  evidence: a DNS check from the phone's browser that reached no NextDNS (or
++  another profile), two canary lookups missing from RAY-PIXEL's log, the phone
++  reporting its location while no DNS reaches RAY-PIXEL for an hour, or NextDNS
++  refusing the key. Restoration keeps the incident; only an AP review closes it.
++
++**It is not yet a written requirement.** `WEB_CONTROLS_RULE_FROM` is null: the
++controls run by consent and an interruption is a review item only. To make it a
++requirement, the AP proposes an amendment in the console (Administration →
++Amendments) and sets `WEB_CONTROLS_RULE_FROM` once Micheal accepts it. Proposed
++wording:
++
++> Accountability controls must remain enabled and configured as directed by the
++> Accountability Partner. Micheal may not disable, replace, circumvent, or
++> materially alter an active accountability control without prior AP approval,
++> except when reasonably necessary for safety, emergency access, or essential
++> device recovery. Loss of monitoring does not suspend the underlying
++> accountability requirement; an interruption is preserved and referred to the
++> AP for review. A DNS event or an interruption is not by itself a Violation
++> Event (§8).
++
++**Setup (AP).**
++1. NextDNS, in the AP's own account (AP email, 2FA): create profiles RAY-PIXEL
++   and HOME-ROUTER, turn on logs for both, generate an API key. Micheal holds no
++   NextDNS login or key.
++2. `npx wrangler secret put NEXTDNS_API_KEY`; set `NEXTDNS_PROFILE_PIXEL` and
++   `NEXTDNS_PROFILE_HOME` in `wrangler.jsonc`; deploy.
++3. Phone: Settings → Network & internet → Private DNS → `<RAY-PIXEL id>.dns.nextdns.io`.
++   In Chrome, Settings → Privacy → Use secure DNS: off (so the browser uses
++   Private DNS and the DNS check sees the real path).
++4. Nest Wifi (Google Home → Wi-Fi → Advanced networking → DNS → Custom): the
++   HOME-ROUTER addresses from NextDNS → Setup, and link the home IP there. If
++   the home IP changes and is not re-linked, the home router stops reporting.
++5. Console → Web Controls → Run the check now: every component should read
++   ACTIVE.
++
++**Before relying on it.** The client follows the NextDNS API v1 documentation
++and is tested against a fake (`test/fixtures/nextdns.ts`), not the live API.
++With the AP's account: block a test domain and see it in the NextDNS dashboard;
++grant 2 minutes and watch it restore; turn Private DNS off for 20 minutes and
++see an interruption open, then restore with the right minutes. Confirm that
++test.nextdns.io answers the phone's browser (if it does not, the canary still
++works and nothing is reported as a bypass).
++
++**Repository access is part of the boundary.** Whoever can merge to `main`
++deploys the Worker that holds the NextDNS key. Keep `main` protected and
++require the AP's review for changes to it.
++
+ ## Privacy boundaries
+ 
+ - **Served paths.** The site serves only R2 `site/`, `photos/` and `wait/`.
+@@ -203,6 +288,8 @@ D1 Time Travel keeps 30 days.
+ - **Audit log.** Subscriber addresses are never written to it.
+ - **Never published:** private verification photographs, signed copies and
+   credentials (§10).
++- **DNS activity (Web Controls) is AP only and never public.** Client IPs are
++  dropped; every AP view is logged and shown to Micheal in his portal.
+ 
+ ## History
+ 
+diff --git a/migrations/0017_web_controls.sql b/migrations/0017_web_controls.sql
+new file mode 100644
+index 0000000..acaf940
+--- /dev/null
++++ b/migrations/0017_web_controls.sql
+@@ -0,0 +1,142 @@
++-- Web Controls (NextDNS, AP only, never public). The AP's NextDNS account filters two separate profiles:
++-- RAY-PIXEL (Micheal Ray Berry's phone, Android Private DNS, Wi-Fi and cellular) and HOME-ROUTER (the
++-- home network's Google Nest Wifi, which also carries TVs, computers and guests and is never attributed to
++-- him personally). The Worker holds the NextDNS API key as a secret and offers named operations only.
++--
++-- DNS shows which domains were looked up, never what was read, bought or said. A DNS event or a monitoring
++-- interruption is a review item for the AP, never a Violation Event by itself (§8); until an amendment makes
++-- web controls a written requirement (WEB_CONTROLS_RULE_FROM), no violation can be declared on them.
++-- Micheal Ray Berry keeps physical control of his phone; switching Private DNS off is always possible and
++-- shows as an interruption. Every AP view of DNS activity is an audit event he can see in his portal.
++
++-- A named service the AP restricts (DoorDash, Reddit …): its domains, and optionally the NextDNS
++-- parental-control service id. policy is the AP's standing rule; temporary access is in web_grants.
++CREATE TABLE web_controls (
++  id INTEGER PRIMARY KEY,
++  name TEXT NOT NULL,
++  domains TEXT NOT NULL,              -- JSON array; a NextDNS entry also covers its subdomains
++  service TEXT,                       -- e.g. 'reddit' (NextDNS parental control), optional
++  profiles TEXT NOT NULL,             -- JSON array of 'RAY-PIXEL' | 'HOME-ROUTER'
++  policy TEXT NOT NULL CHECK (policy IN ('blocked', 'allowed')),
++  note TEXT,
++  created_at TEXT NOT NULL,
++  updated_at TEXT NOT NULL,
++  removed_at TEXT                     -- removed controls are kept; their NextDNS entries are deleted
++);
++CREATE UNIQUE INDEX web_controls_name ON web_controls (name COLLATE NOCASE) WHERE removed_at IS NULL;
++
++-- allow: the AP's allowlist (overrides NextDNS blocklists and categories). monitor: domains surfaced in the
++-- monitored-domains activity view; monitoring never blocks anything.
++CREATE TABLE web_lists (
++  id INTEGER PRIMARY KEY,
++  list TEXT NOT NULL CHECK (list IN ('allow', 'monitor')),
++  domain TEXT NOT NULL,
++  label TEXT,
++  profiles TEXT NOT NULL,
++  created_at TEXT NOT NULL,
++  removed_at TEXT
++);
++CREATE UNIQUE INDEX web_lists_live ON web_lists (list, domain) WHERE removed_at IS NULL;
++
++-- The NextDNS entries this Worker created, and the state it last confirmed. Anything else in the profile
++-- (entered by hand in the NextDNS dashboard) is never changed. A managed entry found changed is drift.
++CREATE TABLE web_managed (
++  profile TEXT NOT NULL,
++  list TEXT NOT NULL CHECK (list IN ('denylist', 'allowlist', 'services')),
++  entry TEXT NOT NULL,
++  applied INTEGER,                    -- 1 active / 0 inactive, as last confirmed in NextDNS
++  first_at TEXT NOT NULL,
++  PRIMARY KEY (profile, list, entry)
++);
++
++-- Temporary access: Micheal Ray Berry asks, the AP decides. Unanswered requests lapse; the restriction stays.
++CREATE TABLE web_requests (
++  id INTEGER PRIMARY KEY,
++  control_id INTEGER NOT NULL REFERENCES web_controls(id),
++  minutes INTEGER NOT NULL,
++  reason TEXT NOT NULL,
++  requested_at TEXT NOT NULL,
++  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'denied', 'withdrawn', 'lapsed')),
++  decided_at TEXT,
++  decided_by TEXT,
++  decision_note TEXT,
++  approved_minutes INTEGER,
++  grant_id INTEGER
++);
++CREATE INDEX web_requests_status ON web_requests (status, requested_at);
++
++-- A grant lifts a restriction only while active and before expires_at. Restoration is confirmed by NextDNS
++-- (restore = 'restored'); until then it is retried every minute and shown as a policy-enforcement failure.
++CREATE TABLE web_grants (
++  id INTEGER PRIMARY KEY,
++  control_id INTEGER NOT NULL REFERENCES web_controls(id),
++  request_id INTEGER,
++  granted_by TEXT NOT NULL,
++  granted_at TEXT NOT NULL,
++  minutes INTEGER NOT NULL,
++  expires_at TEXT NOT NULL,
++  status TEXT NOT NULL CHECK (status IN ('applying', 'active', 'apply-failed', 'expired', 'ended')),
++  applied_at TEXT,
++  ended_at TEXT,
++  ended_by TEXT,
++  restore TEXT CHECK (restore IN ('pending', 'restored', 'failed')),
++  restored_at TEXT,
++  last_error TEXT
++);
++CREATE INDEX web_grants_status ON web_grants (status, expires_at);
++
++-- A DNS check from the phone's browser (MRB portal or Recording Assistant): what test.nextdns.io reported,
++-- and whether the one-time canary hostname it looked up reached RAY-PIXEL's NextDNS log (checked here).
++CREATE TABLE web_checks (
++  id INTEGER PRIMARY KEY,
++  nonce TEXT NOT NULL UNIQUE,
++  app TEXT NOT NULL CHECK (app IN ('mrb', 'assistant')),
++  issued_at TEXT NOT NULL,
++  received_at TEXT,
++  test_status TEXT,                   -- 'ok' when NextDNS answered; anything else means it did not
++  test_profile TEXT,
++  test_protocol TEXT,
++  canary TEXT NOT NULL DEFAULT 'pending' CHECK (canary IN ('pending', 'seen', 'not-seen', 'skipped')),
++  canary_checked_at TEXT
++);
++CREATE INDEX web_checks_received ON web_checks (received_at);
++
++-- Monitoring integrity. active: confirmed working · degraded: not enough information (a quiet phone is
++-- degraded, never interrupted) · interrupted: confirmed unavailable · restored: back, awaiting AP review.
++CREATE TABLE web_components (
++  code TEXT PRIMARY KEY,
++  status TEXT NOT NULL DEFAULT 'unknown' CHECK (status IN ('active', 'degraded', 'interrupted', 'restored', 'unknown')),
++  detail TEXT,
++  verified_at TEXT,                   -- last time it was confirmed working
++  since TEXT,                         -- when the current status began
++  checked_at TEXT
++);
++INSERT INTO web_components (code) VALUES ('nextdns'), ('pixel'), ('home'), ('phone'), ('policy'), ('assistant');
++
++-- An interruption is kept after it ends: restoration records when, and only an AP review closes it.
++CREATE TABLE web_incidents (
++  id INTEGER PRIMARY KEY,
++  component TEXT NOT NULL REFERENCES web_components(code),
++  kind TEXT NOT NULL CHECK (kind IN ('interruption', 'gap', 'drift', 'enforcement')),
++  title TEXT NOT NULL,
++  last_verified_at TEXT,
++  detected_at TEXT NOT NULL,
++  restored_at TEXT,
++  minutes INTEGER,                    -- restored_at − detected_at
++  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'restored', 'reviewed')),
++  evidence TEXT NOT NULL DEFAULT '{}',
++  disposition TEXT CHECK (disposition IN ('technical', 'authorized', 'acknowledged', 'referred')),
++  ap_note TEXT,
++  reviewed_at TEXT
++);
++CREATE INDEX web_incidents_status ON web_incidents (status, detected_at);
++
++CREATE TRIGGER web_incidents_kept BEFORE UPDATE ON web_incidents
++WHEN OLD.status = 'reviewed'
++  OR (OLD.status = 'restored' AND NEW.status = 'open')
++  OR NEW.component IS NOT OLD.component OR NEW.kind IS NOT OLD.kind OR NEW.title IS NOT OLD.title
++  OR NEW.last_verified_at IS NOT OLD.last_verified_at OR NEW.detected_at IS NOT OLD.detected_at
++  OR (OLD.restored_at IS NOT NULL AND NEW.restored_at IS NOT OLD.restored_at)
++BEGIN SELECT RAISE(ABORT, 'web incidents are kept as recorded'); END;
++CREATE TRIGGER web_incidents_no_delete BEFORE DELETE ON web_incidents
++BEGIN SELECT RAISE(ABORT, 'web incidents are kept as recorded'); END;
+diff --git a/public/ap/ap.js b/public/ap/ap.js
+index 0182520..8f6b84e 100644
+--- a/public/ap/ap.js
++++ b/public/ap/ap.js
+@@ -12,7 +12,7 @@
+   var main = document.getElementById('main');
+   var S = null, busy = false, flash = {}, tab = 'dashboard', editing = false, builder = null;
+   var scriptOpen = null, scriptEdit = false, scriptPreview = null; // Scripts library state
+-  var TABS = [['dashboard', 'Dashboard'], ['daily', 'Daily review'], ['enforcement', 'Enforcement'], ['reports', 'Reports'], ['location', 'Location'], ['exercise', 'Exercise'], ['admin', 'Administration'], ['audit', 'Audit log']];
++  var TABS = [['dashboard', 'Dashboard'], ['daily', 'Daily review'], ['enforcement', 'Enforcement'], ['reports', 'Reports'], ['location', 'Location'], ['web', 'Web Controls'], ['exercise', 'Exercise'], ['admin', 'Administration'], ['audit', 'Audit log']];
+   var WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+ 
+   // ── helpers ────────────────────────────────────────────────────────
+@@ -123,6 +123,8 @@
+       ['Milestones and recordings', (S.milestones || []).filter(function (m) { return m.status === 'submitted'; }).length + (S.recordings || []).filter(function (r) { return r.status === 'awaiting AP'; }).length, 'enforcement', 'q-milestones'],
+       ['Open corrective requirements', (S.open || []).length, 'enforcement', 'q-open'],
+       ['Location visits to review', S.location ? S.location.review.new + S.location.review.answered : 0, 'location', 'loc-top'],
++      ['Web access requests to decide', S.web ? S.web.requests.filter(function (r) { return r.status === 'pending'; }).length : 0, 'web', 'web-requests'],
++      ['Web Controls incidents to review', S.web ? S.web.integrity.review : 0, 'web', 'web-incidents'],
+       ['Exercise sessions to review', ((S.exercise || {}).assignments || []).filter(function (a) { return a.status === 'submitted'; }).length, 'exercise', 'ex-review'],
+     ];
+   }
+@@ -1094,6 +1096,29 @@
+       case 'location.visit': return ['Restricted-place visit detected · #' + e.subject, (p.confidence === 'high' ? 'high confidence' : 'possible') + ' · ' + Math.round((p.duration_sec || 0) / 60) + ' min'];
+       case 'location.answered': return ['Micheal Ray Berry answered a location request · #' + e.subject, ''];
+       case 'location.token': return ['Tracker password set by Micheal Ray Berry', ''];
++      case 'ap.web.block': return ['Web control · blocked' + (p.name ? ' · ' + p.name : ''), (p.domains || []).join(', ') + (p.note ? ' · ' + p.note : '')];
++      case 'ap.web.allow': return ['Web control · restriction lifted · ' + (p.name || e.subject), p.note || ''];
++      case 'ap.web.scope': return ['Web control · scope changed · ' + (p.name || e.subject), ((p.to || {}).domains || []).join(', ') + ' · ' + ((p.to || {}).profiles || []).join(' + ')];
++      case 'ap.web.remove': return ['Web control removed · ' + (p.name || e.subject), p.note || ''];
++      case 'ap.web.grant': return ['Temporary access granted · ' + p.control, minutesWords(p.minutes) + (p.requested && p.requested !== p.minutes ? ' (asked ' + minutesWords(p.requested) + ')' : '') + ' · until ' + fmtEt(p.expires_at)];
++      case 'ap.web.end': return ['Temporary access ended early · ' + p.control, p.note || ''];
++      case 'ap.web.request': return ['Access request ' + p.decision + ' · ' + p.control, (p.minutes ? minutesWords(p.minutes) : '') + (p.note ? ' · ' + p.note : '')];
++      case 'ap.web.list': return [(p.list === 'allow' ? 'Allowlist' : 'Monitored domains') + ' · ' + (p.op === 'add' ? 'added ' : 'removed ') + p.domain, ''];
++      case 'ap.web.setting': return e.subject === 'visibility' ? ['DNS visibility changed', VIS[p.from] + ' → ' + VIS[p.to] + ' · ' + (p.reason || '')] : ['Filtering settings · ' + String(e.subject).replace('filtering:', ''), p.to ? 'managed' : 'left as set in NextDNS'];
++      case 'ap.web.view': return ['DNS activity viewed · ' + (e.subject === 'HOME-ROUTER' ? 'home network' : 'RAY-PIXEL'), VIS[p.visibility] + ' · ' + (p.events || 0) + ' events'];
++      case 'ap.web.incident': return ['Web Controls incident reviewed · #' + e.subject, (DISPO[p.disposition] || p.disposition) + ' · ' + (p.note || '')];
++      case 'ap.web.check': return ['Web Controls check run', ''];
++      case 'web.requested': return ['Access requested by Micheal Ray Berry · ' + p.control, minutesWords(p.minutes)];
++      case 'web.withdrawn': return ['Access request withdrawn · #' + e.subject, ''];
++      case 'web.expired': return ['Temporary access expired · ' + p.control, p.state === 'blocked' ? 'restriction restored (confirmed by NextDNS)' : 'now ' + p.state];
++      case 'web.restored': return ['Restriction restored · ' + p.control, 'confirmed by NextDNS'];
++      case 'web.restore-failed': return ['Restriction NOT restored · ' + p.control, (p.errors || []).join('; ')];
++      case 'web.grant-failed': return ['Grant not applied · ' + p.control, 'NextDNS refused; restriction kept'];
++      case 'web.lapsed': return ['Access request lapsed · ' + p.control, 'no decision; restriction kept'];
++      case 'web.drift': return ['NextDNS changed outside the console', (p.changes || []).join(' · ') + (p.corrected ? ' · put back' : ' · NOT put back')];
++      case 'web.incident': return [p.title || 'Web Controls incident', 'last verified ' + fmtEt(p.last_verified_at) + ' · detected ' + fmtEt(p.detected_at)];
++      case 'web.incident-restored': return ['Restored · ' + (p.title || ''), 'interruption ' + minutesWords(p.minutes) + ' · AP review required'];
++      case 'web.status': return ['Web Controls · ' + e.subject + ' ' + p.from + ' → ' + p.to, p.detail || ''];
+       case 'exception.requested': return ['Exception requested · ' + e.subject, (p.category === 'emergency' ? 'Emergency' : 'Planned') + ' · ' + (p.requirements || []).join(', ') + ' · ' + fmtDate(p.date_from) + (p.date_to !== p.date_from ? ' – ' + fmtDate(p.date_to) : '')];
+       case 'ap.exception': return ['Exception ' + (STATUS_X[p.status] || p.status) + ' · ' + e.subject, (p.requirements || []).join(', ') + (p.public_reason ? ' · ' + p.public_reason : '') + (p.conditions ? ' · conditions: ' + p.conditions : '') + (p.revised_due_at ? ' · new due ' + fmtEt(p.revised_due_at) : '') + (p.ap_note ? ' · note: ' + p.ap_note : '')];
+       case 'filing.safety-stop': return ['Safety stop · ' + e.subject, 'Corrective session stopped after ' + Math.floor((p.elapsed_sec || 0) / 60) + ':' + String((p.elapsed_sec || 0) % 60).padStart(2, '0') + ' of the hold; nothing filed (§9).'];
+@@ -1125,7 +1150,7 @@
+ 
+   // ── shell ─────────────────────────────────────────────────────────
+   function tabs() {
+-    var counts = { dashboard: 0, enforcement: (S.flags || []).length + (S.submitted || []).length + pendingSupervision().length, reports: (S.observers || []).filter(function (o) { return o.review === 'received'; }).length + (S.requests || []).filter(function (r) { return r.status === 'received'; }).length };
++    var counts = { dashboard: 0, web: S.web ? S.web.requests.filter(function (r) { return r.status === 'pending'; }).length + S.web.integrity.review : 0, enforcement: (S.flags || []).length + (S.submitted || []).length + pendingSupervision().length, reports: (S.observers || []).filter(function (o) { return o.review === 'received'; }).length + (S.requests || []).filter(function (r) { return r.status === 'received'; }).length };
+     return el('nav', { class: 'tabs', 'aria-label': 'Console sections' }, TABS.map(function (t) {
+       return el('a', { href: '#' + t[0], class: 'tab', 'aria-current': tab === t[0] ? 'page' : null, onclick: function (ev) { ev.preventDefault(); goto(t[0]); } },
+         [t[1], counts[t[0]] ? el('span', { class: 'badge', text: String(counts[t[0]]) }) : null]);
+@@ -1297,6 +1322,168 @@
+     return out;
+   }
+ 
++
++  // ── Web Controls (NextDNS; AP only, never public; every view of DNS activity is logged and shown to Micheal Ray Berry) ──
++  var WEB = { activity: null, err: null };
++  var VIS = { blocked: 'blocked events only', monitored: 'monitored domains', all: 'all domains' };
++  var DISPO = { technical: 'technical cause — no action', authorized: 'authorized, safety or emergency', acknowledged: 'acknowledged', referred: 'referred for violation review' };
++  var WSTATE = { active: ['ACTIVE', 'ok'], degraded: ['DEGRADED', 'warn'], interrupted: ['INTERRUPTED', 'bad'], restored: ['RESTORED — review', 'due'], unknown: ['NOT SET UP', 'muted'] };
++  var CSTATE = { blocked: ['BLOCKED', 'ok'], 'temporarily-allowed': ['TEMPORARILY ALLOWED', 'due'], allowed: ['ALLOWED', 'muted'] };
++  function minutesWords(m) { m = Number(m || 0); return m % 60 === 0 && m ? (m / 60) + ' h' : m > 60 ? Math.floor(m / 60) + ' h ' + (m % 60) + ' min' : m + ' min'; }
++  function clockEt(iso) { return new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }) + ' ET'; }
++  function wordFor(c) { return c.status === 'active' ? ({ pixel: 'REPORTING', home: 'REPORTING', phone: 'ONLINE', assistant: 'READY' }[c.code] || 'ACTIVE') : WSTATE[c.status][0]; }
++  function webApplied(j) { if (j && j.ok && j.applied === false) { flash._web = { ok: false, text: 'Recorded, but NextDNS did not confirm it: ' + (j.errors || []).join('; ') + ' — retried every 5 minutes.' }; render(); } }
++  async function getActivity(profile, from) {
++    if (busy) return;
++    busy = true; WEB.err = null; render();
++    try {
++      var r = await fetch('api/ap/web/activity?profile=' + encodeURIComponent(profile) + '&from=' + encodeURIComponent(from), { credentials: 'same-origin', cache: 'no-store' });
++      var j = await r.json();
++      if (!j.ok) throw new Error(j.error || 'not available');
++      WEB.activity = j;
++    } catch (e) { WEB.err = String(e.message || e); }
++    busy = false; render();
++  }
++  function requestCard(r) {
++    var mins = input({ type: 'number', min: '1', max: String(S.web.max_minutes), value: String(r.minutes), style: 'width:90px', 'aria-label': 'Minutes' });
++    var note = area('Note (optional; recorded with the decision)', 500);
++    return card([el('b', { text: 'ACCESS REQUEST · ' + r.name }), chip('awaiting decision', 'due')], [
++      row('Requested duration', minutesWords(r.minutes)), row('Reason', r.reason), row('Asked', fmtEt(r.requested_at)),
++      note,
++      el('div', { class: 'btns' }, [
++        btn('Approve ' + minutesWords(r.minutes), function () { post('wr-' + r.id, 'api/ap/web/access', { op: 'approve', request: r.id, note: note.value.trim() }); }),
++        mins, btn('Approve with this duration', function () { post('wr-' + r.id, 'api/ap/web/access', { op: 'approve', request: r.id, minutes: Number(mins.value), note: note.value.trim() }); }, 'ghost'),
++        btn('Deny', function () { post('wr-' + r.id, 'api/ap/web/access', { op: 'deny', request: r.id, note: note.value.trim() }); }, 'ghost'),
++      ]),
++      el('p', { class: 'note', text: 'Approved access ends by itself at its expiry and the restriction is restored; you do not have to remember. Unanswered, the request lapses after ' + minutesWords(S.web.lapse_minutes) + ' and nothing is lifted.' }),
++      msg('wr-' + r.id),
++    ], 'pending');
++  }
++  function controlRow(c) {
++    var st = CSTATE[c.state] || [c.state, 'muted'];
++    var mins = input({ type: 'number', min: '1', max: String(S.web.max_minutes), value: '30', style: 'width:80px', 'aria-label': 'Minutes for ' + c.name });
++    var acts = [];
++    if (c.state === 'blocked') acts.push(mins, btn('Grant access', function () { post('wc-' + c.id, 'api/ap/web/access', { op: 'grant', control: c.id, minutes: Number(mins.value) }); }, 'sm'),
++      btn('Allow (standing)', function () { confirmThen('Lift the standing restriction on ' + c.name + '?', ['It stays listed and tracked, but is no longer blocked. For time-limited access use Grant access instead.'], 'Lift it', function () { post('wc-' + c.id, 'api/ap/web/control', { op: 'allow', id: c.id }).then(webApplied); }); }, 'ghost sm'));
++    if (c.state === 'temporarily-allowed') acts.push(btn('End access now', function () { post('wc-' + c.id, 'api/ap/web/access', { op: 'end', control: c.id, note: 'ended by the AP' }); }, 'red sm'));
++    if (c.state === 'allowed') acts.push(btn('Block', function () { post('wc-' + c.id, 'api/ap/web/control', { op: 'reblock', id: c.id }).then(webApplied); }, 'sm'));
++    var why = input({ placeholder: 'Why remove it (recorded)', 'aria-label': 'Why remove ' + c.name });
++    return el('details', { class: 'dayrow' }, [
++      el('summary', {}, [el('span', { class: 'dd', text: c.name }), chip(st[0], st[1]), c.grant ? el('span', { class: 'hint', text: 'until ' + clockEt(c.grant.expires_at) }) : null, el('span', { class: 'hint', text: c.profiles.join(' + ') })]),
++      el('div', { class: 'cb' }, [
++        row('Domains', c.domains.join(', ') + (c.service ? ' · NextDNS service: ' + c.service : '')),
++        el('div', { class: 'btns' }, acts), msg('wc-' + c.id),
++        el('div', { class: 'edit' }, [field('Remove this control', why), btn('Remove', function (ev) {
++          if (!need(why.value, 5, 'Say why it is being removed.', ev)) return;
++          confirmThen('Remove ' + c.name + '?', ['Its NextDNS entries are deleted, so it is no longer blocked. The control and its history are kept in the record.', 'Reason: ' + why.value.trim()], 'Remove', function () { post('wc-' + c.id, 'api/ap/web/control', { op: 'remove', id: c.id, note: why.value.trim() }).then(webApplied); }, true);
++        }, 'ghost sm')]),
++      ]),
++    ]);
++  }
++  function incidentCard(i) {
++    var disp = el('select', { 'aria-label': 'Disposition' }, Object.keys(DISPO).map(function (k) { return el('option', { value: k, text: DISPO[k] }); }));
++    var note = area('Review note (required)', 1000);
++    var ongoing = i.status === 'open';
++    var detail = i.evidence && i.evidence.detail ? i.evidence.detail : Array.isArray(i.evidence) ? i.evidence.map(function (d) { return d.profile + ': ' + d.drift.map(function (x) { return x.list + ' ' + x.entry + ' ' + x.from + ' → ' + x.to; }).join(', '); }).join(' · ') : '';
++    return card([el('b', { text: i.title }), chip(ongoing ? 'ONGOING' : i.status === 'restored' ? 'AP REVIEW REQUIRED' : 'REVIEWED', ongoing ? 'bad' : i.status === 'restored' ? 'due' : 'ok')], [
++      row('Last verified active', i.last_verified_at ? fmtEt(i.last_verified_at) : '—'),
++      row('Failure detected', fmtEt(i.detected_at)),
++      row('Restored', i.restored_at ? fmtEt(i.restored_at) : 'not yet', i.restored_at ? '' : 'no'),
++      row('Interruption', i.minutes != null ? minutesWords(i.minutes) : ongoing ? minutesWords(Math.round((Date.now() - Date.parse(i.detected_at)) / 60000)) + ' so far' : '—'),
++      detail ? el('p', { class: 'note', text: detail }) : null,
++      i.status === 'reviewed' ? row('Your review', (DISPO[i.disposition] || i.disposition) + ' · ' + (i.ap_note || '') + ' · ' + fmtEt(i.reviewed_at)) : null,
++      i.status === 'restored' ? el('div', { class: 'grid2' }, [field('Disposition', disp), note]) : null,
++      i.status === 'restored' ? btn('Record review', function (ev) { if (!need(note.value, 5, 'Record the review.', ev)) return; post('wi-' + i.id, 'api/ap/web/incident', { id: i.id, disposition: disp.value, note: note.value.trim() }); }) : null,
++      ongoing ? el('p', { class: 'note', text: 'Ongoing: it can be reviewed once reporting is restored. A technical cause (phone off, outage, router reboot) is not a finding.' }) : null,
++      msg('wi-' + i.id),
++    ], i.status === 'reviewed' ? '' : 'pending');
++  }
++  function filteringPanel() {
++    var cats = S.web.categories;
++    return ['RAY-PIXEL', 'HOME-ROUTER'].map(function (p) {
++      var f = S.web.filtering[p];
++      var managed = el('input', { type: 'checkbox', checked: !!f, 'aria-label': 'Managed by the console' });
++      var box = function (k, label, on) { return el('label', { class: 'check' }, [el('input', { type: 'checkbox', 'data-k': k, checked: !!on }), label]); };
++      var boxes = [box('safeSearch', 'SafeSearch', f && f.safeSearch), box('youtubeRestrictedMode', 'YouTube Restricted Mode', f && f.youtubeRestrictedMode), box('blockBypass', 'Block bypass methods (VPNs, proxies)', f && f.blockBypass)]
++        .concat(cats.map(function (k) { return box('cat:' + k, 'Block ' + k, f && f.categories && f.categories[k]); }));
++      return el('fieldset', {}, [el('legend', { text: p }), el('label', { class: 'check' }, [managed, 'Managed here (otherwise left as set in NextDNS)'])].concat(boxes).concat([
++        btn('Save ' + p, function () {
++          var out = null;
++          if (managed.checked) { out = { categories: {} }; boxes.forEach(function (b) { var i = b.querySelector('input'), k = i.getAttribute('data-k'); if (k.indexOf('cat:') === 0) out.categories[k.slice(4)] = i.checked; else out[k] = i.checked; }); }
++          post('wf-' + p, 'api/ap/web/setting', { profile: p, filtering: out }).then(webApplied);
++        }, 'ghost sm'), msg('wf-' + p)]));
++    });
++  }
++  function webTab() {
++    var W = S.web;
++    if (!W) return [section('Web Controls', null, [el('p', { class: 'note', text: 'Not available.' })], { always: true })];
++    var I = W.integrity, out = [];
++    out.push(section('Accountability system', null, I.components.map(function (c) {
++      return row(c.label, wordFor(c) + (c.detail ? ' · ' + c.detail : '') + (c.verified_at && c.status !== 'active' ? ' · last verified ' + fmtEt(c.verified_at) : ''), c.status === 'active' ? 'ok' : c.status === 'interrupted' ? 'no' : '');
++    }).concat([
++      el('div', { class: 'tstate ' + ({ active: 'k-ok', interrupted: 'k-bad', restored: 'k-due' }[I.overall] || 'k-warn') }, [el('span', { class: 'lamp' }), 'INTEGRITY: ' + I.headline]),
++      el('p', { class: 'note', text: W.rule_from ? 'Written requirement from ' + fmtDate(W.rule_from) + ' (amendment). ' + I.rule : 'Not a written requirement: no amendment is co-signed, so the controls run by consent and an interruption is a review item only — no violation can be declared on it.' }),
++      el('p', { class: 'note', text: 'Missing DNS alone is never treated as a bypass: a sleeping or offline phone is DEGRADED. INTERRUPTED needs positive evidence (a check that reached no NextDNS, the phone online with no RAY-PIXEL DNS for an hour, or NextDNS refusing your key). Restoration keeps the interruption for your review.' }),
++      el('div', { class: 'btns' }, [btn('Run the check now', function () { post('w-check', 'api/ap/web/check', {}); }, 'ghost'), msg('w-check'), msg('_web')]),
++      W.configured ? null : el('p', { class: 'note warnline', text: 'Not set up: NEXTDNS_API_KEY (secret) and the two profile ids (NEXTDNS_PROFILE_PIXEL, NEXTDNS_PROFILE_HOME) must be set. See README → Web Controls.' }),
++    ]), { id: 'web-top', always: true }));
++
++    var pending = W.requests.filter(function (r) { return r.status === 'pending'; });
++    out.push(section('Access requests', pending.length, pending.map(requestCard), { id: 'web-requests' }));
++
++    var domain = input({ placeholder: 'doordash.com' }), name = input({ placeholder: 'DoorDash (optional)' }), service = input({ placeholder: 'e.g. reddit (optional)' });
++    var where = el('select', { 'aria-label': 'Profiles' }, [el('option', { value: 'both', text: 'RAY-PIXEL + HOME-ROUTER' }), el('option', { value: 'RAY-PIXEL', text: 'RAY-PIXEL (phone) only' }), el('option', { value: 'HOME-ROUTER', text: 'HOME-ROUTER (home) only' })]);
++    out.push(section('Web controls', null, W.controls.map(controlRow).concat([
++      el('div', { class: 'grid2' }, [field('Block a domain', domain), field('Service name', name), field('NextDNS service id', service, 'Also blocks the service’s other domains NextDNS knows.'), field('Where', where)]),
++      el('div', { class: 'btns' }, [btn('Block domain', function (ev) {
++        if (!need(domain.value, 4, 'Enter a domain.', ev)) return;
++        post('w-block', 'api/ap/web/control', { op: 'block', domain: domain.value.trim(), name: name.value.trim(), service: service.value.trim(), profiles: where.value === 'both' ? null : [where.value] }).then(webApplied);
++      }), msg('w-block')]),
++    ]), { always: true }));
++
++    var inc = W.incidents.filter(function (i) { return i.status !== 'reviewed'; });
++    var done = W.incidents.filter(function (i) { return i.status === 'reviewed'; });
++    out.push(section('Integrity incidents', inc.length, inc.map(incidentCard).concat(done.length ? [el('details', {}, [el('summary', { text: 'Reviewed · ' + done.length }), el('div', { class: 'cb' }, done.map(incidentCard))])] : []), { id: 'web-incidents', always: true }));
++
++    var prof = el('select', { 'aria-label': 'Source' }, [el('option', { value: 'RAY-PIXEL', text: 'RAY-PIXEL ACTIVITY (phone)' }), el('option', { value: 'HOME-ROUTER', text: 'HOME NETWORK ACTIVITY' })]);
++    var win = el('select', { 'aria-label': 'Window' }, [['-1h', 'Last hour'], ['-6h', 'Last 6 hours'], ['-24h', 'Last 24 hours'], ['-7d', 'Last 7 days']].map(function (o) { return el('option', { value: o[0], text: o[1], selected: o[0] === '-24h' }); }));
++    out.push(section('DNS activity', null, [
++      el('p', { class: 'note', text: 'AP only, never public. Visibility: ' + VIS[W.visibility] + '. Each view is logged and shown to Micheal Ray Berry in his portal.' }),
++      el('div', { class: 'btns' }, [prof, win, btn('View activity', function () { getActivity(prof.value, win.value); }, 'ghost')]),
++      WEB.err ? el('div', { class: 'msg err', text: WEB.err }) : null,
++    ], { always: true }));
++    if (WEB.activity) {
++      var A = WEB.activity;
++      var SIG = { blocked: ['blocked', 'bad'], controlled: ['controlled', 'due'], monitored: ['monitored', 'due'], lookup: ['lookup', 'muted'] };
++      out.push(section(A.heading, A.events.length, [el('p', { class: 'note', text: A.attribution }), el('p', { class: 'note', text: A.note })].concat(A.events.map(function (e) {
++        return el('div', { class: 'row' }, [el('span', { class: 'k', text: fmtEt(e.at) }), el('span', { class: 'v' }, [e.domain + (e.matched ? ' · ' + e.matched : '') + (e.device ? ' · ' + e.device : '') + ' ', chip(SIG[e.signal][0], SIG[e.signal][1])])]);
++      })), { always: true }));
++    }
++
++    var vis = el('select', { 'aria-label': 'Visibility' }, Object.keys(VIS).map(function (k) { return el('option', { value: k, text: VIS[k], selected: k === W.visibility }); }));
++    var visWhy = input({ placeholder: 'Why (recorded)' });
++    var allowD = input({ placeholder: 'wellsfargo.com' }), monD = input({ placeholder: 'ubereats.com' }), monL = input({ placeholder: 'Uber Eats (optional)' });
++    function listRows(rows, list) { return rows.map(function (r) { return el('div', { class: 'row' }, [el('span', { class: 'k', text: r.domain + (r.label ? ' · ' + r.label : '') }), el('span', { class: 'v' }, [btn('Remove', function () { post('wl-' + list, 'api/ap/web/list', { list: list, op: 'remove', id: r.id }).then(webApplied); }, 'ghost sm')])]); }); }
++    out.push(section('Policy settings', null, [
++      el('div', { class: 'edit' }, [field('AP visibility of DNS activity', vis, 'Narrowest by default. Widening it is a deliberate, recorded decision.'), field('Reason', visWhy),
++        btn('Save visibility', function (ev) { if (!need(visWhy.value, 5, 'Record why.', ev)) return; post('w-vis', 'api/ap/web/setting', { visibility: vis.value, reason: visWhy.value.trim() }); }, 'ghost')]), msg('w-vis'),
++      el('h3', { class: 'sech', text: 'Allowlist' }), el('p', { class: 'note', text: 'Allowlisted domains override NextDNS blocklists and categories. A domain inside a web control cannot be allowlisted — use temporary access.' }),
++    ].concat(listRows(W.allow, 'allow')).concat([
++      el('div', { class: 'edit' }, [field('Add to the allowlist', allowD), btn('Add', function (ev) { if (!need(allowD.value, 4, 'Enter a domain.', ev)) return; post('wl-allow', 'api/ap/web/list', { list: 'allow', op: 'add', domain: allowD.value.trim() }).then(webApplied); }, 'ghost')]), msg('wl-allow'),
++      el('h3', { class: 'sech', text: 'Monitored domains' }), el('p', { class: 'note', text: 'Shown in DNS activity under “monitored domains”. Monitoring never blocks anything.' }),
++    ]).concat(listRows(W.monitor, 'monitor')).concat([
++      el('div', { class: 'edit' }, [field('Monitor a domain', monD), field('Label', monL), btn('Add', function (ev) { if (!need(monD.value, 4, 'Enter a domain.', ev)) return; post('wl-monitor', 'api/ap/web/list', { list: 'monitor', op: 'add', domain: monD.value.trim(), label: monL.value.trim() }); }, 'ghost')]), msg('wl-monitor'),
++      el('h3', { class: 'sech', text: 'Filtering' }),
++      el('div', { class: 'edit' }, filteringPanel()),
++    ]), { always: true }));
++
++    out.push(section('Temporary access history', null, W.grants.length ? W.grants.map(function (g) {
++      var restore = g.restore === 'restored' ? 'restored ' + clockEt(g.restored_at) : g.restore === 'failed' ? 'NOT restored — retrying' : g.restore === 'pending' ? 'restoring…' : '';
++      return row(fmtEt(g.granted_at) + ' · ' + g.name, minutesWords(g.minutes) + ' · until ' + clockEt(g.expires_at) + ' · ' + g.status + (restore ? ' · ' + restore : '') + (g.last_error ? ' · ' + g.last_error : ''), g.restore === 'failed' || g.status === 'apply-failed' ? 'no' : '');
++    }) : [el('p', { class: 'note', text: 'None yet.' })], { always: true }));
++    return out;
++  }
++
+   // ── Exercise (Amendment 4) — public; strict about doing it, never punitive ──
+   var WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+   var EX_KIND = { assigned: 'muted', in_progress: 'due', submitted: 'due', accepted: 'ok', incomplete: 'bad', missed: 'bad', excused: 'muted', stopped_safety: 'muted' };
+@@ -1399,7 +1586,7 @@
+       el('span', { text: d ? 'Day ' + d.day + ' · ' + fmtDate(a.today) : fmtDate(a.today) }),
+     );
+     var y = window.scrollY;
+-    var views = { dashboard: dashboard, daily: dailyReview, enforcement: enforcement, reports: reports, location: locationTab, exercise: exerciseTab, admin: admin, audit: audit };
++    var views = { dashboard: dashboard, daily: dailyReview, enforcement: enforcement, reports: reports, location: locationTab, web: webTab, exercise: exerciseTab, admin: admin, audit: audit };
+     main.replaceChildren.apply(main, [tabs()].concat((views[tab] || dashboard)()).filter(Boolean));
+     window.scrollTo(0, y);
+   }
+diff --git a/public/assistant/index.html b/public/assistant/index.html
+index 22fd74a..59caf27 100644
+--- a/public/assistant/index.html
++++ b/public/assistant/index.html
+@@ -238,5 +238,7 @@
+ 
+   <!-- Single classic script (built from js/*.js) — also load modular sources in order if bundle missing -->
+   <script src="app.js"></script>
++  <!-- Web Controls: the phone's DNS check (README, Web Controls) -->
++  <script src="/dnscheck.js"></script>
+ </body>
+ </html>
+diff --git a/public/dnscheck.js b/public/dnscheck.js
+new file mode 100644
+index 0000000..8246650
+--- /dev/null
++++ b/public/dnscheck.js
+@@ -0,0 +1,27 @@
++/* Web Controls DNS check (MRB portal and Recording Assistant, Micheal Ray Berry's phone).
++   On open, at most every 10 minutes: look up a one-time hostname the Worker issued (it need not resolve;
++   the Worker later looks for the lookup in the RAY-PIXEL NextDNS log) and ask test.nextdns.io which NextDNS
++   profile, if any, answered this phone. Only that result is sent: no history, no location, nothing else.
++   A failed request sends nothing about NextDNS, so an outage is never reported as a bypass. */
++(function () {
++  'use strict';
++  var app = /^\/assistant\//.test(location.pathname) ? 'assistant' : 'mrb';
++  try {
++    var last = Number(sessionStorage.getItem('web-dnscheck') || 0);
++    if (Date.now() - last < 10 * 60000) return;
++    sessionStorage.setItem('web-dnscheck', String(Date.now()));
++  } catch (e) { /* storage off: check anyway */ }
++  function post(body) {
++    return fetch('api/web/check', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin' })
++      .then(function (r) { return r.json(); });
++  }
++  post({ op: 'start', app: app }).then(function (s) {
++    if (!s || !s.ok) return null;
++    var canary = s.canary ? fetch(s.canary, { mode: 'no-cors', cache: 'no-store' }).catch(function () { /* expected: it need not resolve */ }) : null;
++    var test = fetch('https://test.nextdns.io', { cache: 'no-store' })
++      .then(function (r) { return r.json(); })
++      .then(function (j) { return { status: j.status || null, profile: j.profile || null, protocol: j.protocol || null }; })
++      .catch(function () { return {}; });
++    return Promise.all([canary, test]).then(function (res) { return post({ op: 'finish', nonce: s.nonce, test: res[1] }); });
++  }).catch(function () { /* offline: nothing to report */ });
++})();
+diff --git a/public/mrb/index.html b/public/mrb/index.html
+index 9dc17f4..2ec4ccf 100644
+--- a/public/mrb/index.html
++++ b/public/mrb/index.html
+@@ -83,5 +83,6 @@
+ </main>
+ <footer>This portal files to the record. It cannot edit, resolve, excuse, or remove a public entry. Administered by the Accountability Partner · ap@michealrayberry.com · <a href="/cdn-cgi/access/logout">Sign out</a></footer>
+ <script src="mrb.js"></script>
++<script src="/dnscheck.js"></script>
+ </body>
+ </html>
+diff --git a/public/mrb/mrb.js b/public/mrb/mrb.js
+index 4808bdc..4aa3398 100644
+--- a/public/mrb/mrb.js
++++ b/public/mrb/mrb.js
+@@ -248,6 +248,60 @@
+     return sec;
+   }
+ 
++
++  // ── Web controls (NextDNS; the AP's filter on your phone and home network; you see every time the AP looks) ──
++  var webDraft = { control: '', minutes: '30', reason: '' };
++  var W_STATE = { blocked: 'Blocked', 'temporarily-allowed': 'Open until ', allowed: 'Allowed' };
++  var W_REQ = { pending: 'Waiting for the AP', approved: 'Approved', denied: 'Denied', withdrawn: 'Withdrawn', lapsed: 'Lapsed — no decision' };
++  var W_COMP = { active: 'OK', degraded: 'not reporting', interrupted: 'INTERRUPTED', restored: 'restored — AP review', unknown: 'not set up' };
++  var W_DISPO = { technical: 'technical cause — no action', authorized: 'authorized / safety / emergency', acknowledged: 'acknowledged', referred: 'referred for violation review' };
++  function etClock(iso) { return new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }) + ' ET'; }
++  function webSec() {
++    var W = S.web;
++    if (!W || (!W.configured && !W.controls.length)) return null;
++    var sec = el('section', { class: 'web' }, [el('div', { class: 'eyebrow', text: 'Web controls' })]);
++    sec.appendChild(el('p', { class: 'parts mono' }, [el('span', { class: W.integrity.overall === 'active' ? 'ok' : '', text: W.integrity.headline }), ' · ',
++      W.integrity.components.map(function (c) { return c.label + ' ' + W_COMP[c.status]; }).join(' · ')]));
++    sec.appendChild(el('p', { class: 'note', text: 'The Accountability Partner runs a DNS filter on your phone (Private DNS) and the home network. DNS shows which sites were looked up, never what you read, bought or said, and it is never published. A lookup is a signal, not proof you used a service. You keep control of your phone: turning Private DNS off is always possible and shows as an interruption for the AP to review, never as a violation by itself.' +
++      (W.rule_from ? ' Under the amendment in effect from ' + fmtDate(W.rule_from) + ', keep the controls on as the AP directs; safety, emergency access and device recovery come first.' : ' Web controls are not yet a written requirement; they become one only if an amendment is co-signed.') }));
++    W.controls.forEach(function (c) {
++      sec.appendChild(el('div', { class: 'mono' }, [c.name + ' — ', el('span', { class: c.state === 'blocked' ? 'no' : 'ok', text: (W_STATE[c.state] || c.state) + (c.expires_at ? etClock(c.expires_at) : '') })]));
++    });
++    var blocked = W.controls.filter(function (c) { return c.state === 'blocked'; });
++    if (blocked.length) {
++      if (!webDraft.control || !blocked.some(function (c) { return String(c.id) === webDraft.control; })) webDraft.control = String(blocked[0].id);
++      var sel = el('select', { 'aria-label': 'Service' }, blocked.map(function (c) { return el('option', { value: String(c.id), text: c.name, selected: String(c.id) === webDraft.control }); }));
++      sel.addEventListener('change', function () { webDraft.control = sel.value; });
++      var mins = el('input', { type: 'number', min: '1', max: String(W.max_minutes), 'aria-label': 'Minutes' }); mins.value = webDraft.minutes; mins.addEventListener('input', function () { webDraft.minutes = mins.value; });
++      var why = el('textarea', { maxlength: '500', placeholder: 'Reason (the AP reads this)', 'aria-label': 'Reason' }); why.value = webDraft.reason; why.addEventListener('input', function () { webDraft.reason = why.value; });
++      sec.appendChild(el('details', { open: openForm === 'web' }, [el('summary', { text: 'Ask for temporary access', onclick: function () { openForm = openForm === 'web' ? null : 'web'; } }), el('div', { class: 'req-form' }, [
++        el('label', { class: 'fieldl' }, ['Service', sel]), el('label', { class: 'fieldl' }, ['Minutes (up to ' + W.max_minutes + ')', mins]), el('label', { class: 'fieldl' }, ['Reason', why]),
++        el('button', { class: 'btn', disabled: busy, text: 'Send request', onclick: function () { post('web-req', 'api/web/request', { op: 'request', control: Number(webDraft.control), minutes: Number(webDraft.minutes), reason: webDraft.reason.trim() }).then(function () { if (flash['web-req'] && flash['web-req'].ok) { webDraft.reason = ''; render(); } }); } }),
++        msg('web-req'),
++        el('p', { class: 'note', text: 'The AP approves, approves for a different time, or denies. Access ends by itself at its expiry. Unanswered, a request lapses after ' + Math.round(W.lapse_minutes / 60) + ' hours.' }),
++      ])]));
++    }
++    (W.requests || []).slice(0, 6).forEach(function (r) {
++      var box = el('div', { class: 'obligation' + (r.status === 'pending' ? '' : ' filed') }, [el('div', { class: 'ob-main' }, [
++        el('div', { class: 'ob-title', text: r.name + ' · ' + (W_REQ[r.status] || r.status) }),
++        el('div', { class: 'ob-due mono', text: 'Asked ' + fmtEt(r.requested_at) + ' · ' + r.minutes + ' min' + (r.approved_minutes && r.approved_minutes !== r.minutes ? ' · approved ' + r.approved_minutes + ' min' : '') + (r.expires_at ? ' · until ' + etClock(r.expires_at) : '') }),
++        el('div', { class: 'ob-what', text: r.reason }),
++        r.decision_note ? el('div', { class: 'ob-what muted', text: 'AP: ' + r.decision_note }) : null,
++      ])]);
++      if (r.status === 'pending') box.appendChild(el('button', { class: 'linkish', disabled: busy, text: 'Withdraw', onclick: function () { post('web-w' + r.id, 'api/web/request', { op: 'withdraw', id: r.id }); } }));
++      sec.appendChild(box);
++    });
++    var inc = W.incidents || [];
++    if (inc.length) sec.appendChild(el('details', {}, [el('summary', { text: 'Monitoring interruptions · ' + inc.length }), el('div', { class: 'req-form' }, inc.map(function (i) {
++      return el('div', { class: 'mono small', text: i.title + ' · detected ' + fmtEt(i.detected_at) + (i.restored_at ? ' · restored ' + fmtEt(i.restored_at) + ' (' + i.minutes + ' min)' : ' · ongoing') + ' · ' + (i.status === 'reviewed' ? 'AP: ' + (W_DISPO[i.disposition] || i.disposition) : i.status === 'restored' ? 'awaiting AP review' : 'open') });
++    }))]));
++    var views = W.views || [];
++    sec.appendChild(el('details', {}, [el('summary', { text: 'When the AP viewed your DNS activity · ' + views.length + (views.length === 20 ? '+' : '') }), el('div', { class: 'req-form' }, views.length ? views.map(function (v) {
++      return el('div', { class: 'mono', text: fmtEt(v.at) + ' · ' + (v.profile === 'HOME-ROUTER' ? 'home network' : 'phone') + ' · ' + ({ blocked: 'blocked events only', monitored: 'monitored domains', all: 'all domains' }[v.visibility] || v.visibility) });
++    }) : [el('p', { class: 'note', text: 'Not viewed yet.' })])]));
++    return sec;
++  }
++
+   // ── Sleep & activity (Fitbit through Google Health; private, tracking only) ──
+   function fitnessSec() {
+     var F = S.fitness || {};
+@@ -465,7 +519,7 @@
+     document.getElementById('dayline').textContent = (a.active ? 'Under agreement' : 'Agreement not active') + (S.day ? ' · Day ' + S.day : '');
+     var A = S.amendments || { proposals: [] };
+     var amendFirst = A.proposals.some(function (p) { return p.status === 'proposed'; });
+-    main.replaceChildren.apply(main, (amendFirst ? [amendmentsSec()] : []).concat([today(), owed(), tonight(), streamSec(), exerciseSec(), exceptions(), locationSec(), fitnessSec(), youtubeSec()]).concat(amendFirst ? [] : [amendmentsSec()]).concat([record()]));
++    main.replaceChildren.apply(main, (amendFirst ? [amendmentsSec()] : []).concat([today(), owed(), tonight(), streamSec(), exerciseSec(), exceptions(), locationSec(), webSec(), fitnessSec(), youtubeSec()]).concat(amendFirst ? [] : [amendmentsSec()]).concat([record()]));
+   }
+   function tick() {
+     document.querySelectorAll('[data-count]').forEach(function (n) {
+diff --git a/src/api/ap.ts b/src/api/ap.ts
+index d2da58b..0fcb89f 100644
+--- a/src/api/ap.ts
++++ b/src/api/ap.ts
+@@ -21,6 +21,7 @@ import { fitnessSummary } from '../cron/google';
+ import { LOCATION_RULE_FROM } from '../location';
+ import { EXERCISE_RULE_FROM } from '../rules';
+ import { exerciseState } from './exercise';
++import { webState } from './webControls';
+ import { amendmentState } from './amendments';
+ 
+ const fail = (message: string, status: 400 | 403 | 404 | 409 = 400): never => { throw new FilingError(message, status); };
+@@ -83,7 +84,7 @@ export async function getState(c: Ctx) {
+     all(`SELECT id, logged_at, date, day, url, attestation_seal FROM confirmations WHERE edition = 2 AND date >= '${DAY_ONE}' ORDER BY date DESC`),
+     all('SELECT status, COUNT(*) AS n FROM subscribers GROUP BY status'),
+     all('SELECT id, date, type, title, cosigned_on FROM updates ORDER BY date DESC, id DESC LIMIT 20'),
+-    all("SELECT id, at, actor, action, subject, payload FROM events WHERE actor LIKE 'ap:%' OR action IN ('flag.created', 'observer.received', 'filing.packet', 'filing.corrective', 'correction.requested', 'script.system', 'filing.safety-stop', 'exception.requested', 'location.visit', 'location.answered', 'location.token', 'fitbit.connected', 'fitbit.lapsed', 'twitch.connected', 'twitch.lapsed', 'twitch.title', 'filing.exercise', 'exercise.safety-stop', 'exercise.routine-accepted', 'amendment.accepted', 'amendment.declined', 'amendment.confirmed') ORDER BY id DESC LIMIT 150"),
++    all("SELECT id, at, actor, action, subject, payload FROM events WHERE actor LIKE 'ap:%' OR action IN ('flag.created', 'observer.received', 'filing.packet', 'filing.corrective', 'correction.requested', 'script.system', 'filing.safety-stop', 'exception.requested', 'location.visit', 'location.answered', 'location.token', 'fitbit.connected', 'fitbit.lapsed', 'twitch.connected', 'twitch.lapsed', 'twitch.title', 'filing.exercise', 'exercise.safety-stop', 'exercise.routine-accepted', 'amendment.accepted', 'amendment.declined', 'amendment.confirmed', 'web.requested', 'web.withdrawn', 'web.expired', 'web.restored', 'web.restore-failed', 'web.grant-failed', 'web.lapsed', 'web.drift', 'web.incident', 'web.incident-restored', 'web.status') ORDER BY id DESC LIMIT 150"),
+   ]);
+   const [daysRows, supRows] = await Promise.all([
+     all<PacketRow & { date: string; receipts: string; weight_lb: number | null }>(`SELECT date, weight_lb, video, photo_front, photo_left, photo_rear, photo_right, photo_wait, receipts FROM days WHERE date >= '${DAY_ONE}' ORDER BY date DESC LIMIT 60`),
+@@ -135,6 +136,8 @@ export async function getState(c: Ctx) {
+     fitness: await fitnessSummary(c.env, 60),
+     exercise: await exerciseState(c.env),
+     amendments: await amendmentState(db),
++    // Web Controls (NextDNS): policy, requests and integrity. DNS activity is a separate, logged view.
++    web: await webState(c.env),
+     script_requests: await all('SELECT id, created_at, kind, classification, note, status FROM script_requests ORDER BY id DESC LIMIT 50'),
+     // Which script version each recording used (null before versioning).
+     script_used: await all(`SELECT date, kind, script_version, logged_at FROM attestations WHERE date >= '${DAY_ONE}' AND status = 'VALID-CONSUMED' ORDER BY logged_at DESC LIMIT 200`),
+diff --git a/src/api/webControls.ts b/src/api/webControls.ts
+new file mode 100644
+index 0000000..376c836
+--- /dev/null
++++ b/src/api/webControls.ts
+@@ -0,0 +1,325 @@
++/* Web Controls API (NextDNS). The AP decides policy and temporary access; Micheal Ray Berry asks for
++   access and his phone's browser runs DNS checks. Every AP action is an audit event; every AP view of DNS
++   activity is an audit event he can see in his portal. Named operations only: nothing here forwards an
++   arbitrary request to NextDNS, and the NextDNS key never leaves the Worker. */
++import { appendEvent } from '../events';
++import { mailAP } from '../mail';
++import { WEB_CONTROLS_RULE_FROM } from '../rules';
++import {
++  activity, CATEGORIES, conflictFor, endGrant, errorsFor, getControl, grantAccess, listControls, listEntries, loadFiltering, loadVisibility,
++  MAX_GRANT_MIN, minutesText, normalizeDomain, PROFILE_LABEL, PROFILES, profileId, reconcileAll, REQUEST_LAPSE_MIN, type Control, type Filtering, type ProfileCode,
++} from '../webControls';
++import { finishCheck, integrityStatus, listIncidents, REVIEW, reviewIncident, startCheck, webCheck } from '../webIntegrity';
++import { nextdnsConfigured } from '../nextdns';
++import { FilingError, type Ctx } from './filing';
++
++const fail = (message: string, status: 400 | 403 | 404 | 409 = 400): never => { throw new FilingError(message, status); };
++const text = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
++async function json(c: Ctx): Promise<Record<string, unknown>> {
++  const b = await c.req.json<Record<string, unknown>>().catch(() => null);
++  if (!b || typeof b !== 'object' || Array.isArray(b)) fail('Invalid request.');
++  return b!;
++}
++const apActor = (c: Ctx) => `ap:${c.get('who').email}`;
++function profilesOf(v: unknown): ProfileCode[] {
++  if (v == null || (Array.isArray(v) && !v.length)) return [...PROFILES];
++  const list = (Array.isArray(v) ? v : [v]).map(String);
++  if (!list.every((p) => (PROFILES as readonly string[]).includes(p))) fail('Profiles are RAY-PIXEL and HOME-ROUTER.');
++  return [...new Set(list)] as ProfileCode[];
++}
++function minutesOf(v: unknown): number {
++  const m = Number(v);
++  if (!Number.isInteger(m) || m < 1 || m > MAX_GRANT_MIN) fail(`Minutes: 1–${MAX_GRANT_MIN}.`);
++  return m;
++}
++async function controlOf(c: Ctx, id: unknown): Promise<Control> {
++  const ctl = await getControl(c.env, Number(id));
++  if (!ctl || ctl.state === 'removed') fail('No such web control.', 404);
++  return ctl!;
++}
++/** Apply the policy now and say whether NextDNS confirmed it. Unconfirmed policy is retried every 5 minutes. */
++async function applied(c: Ctx, ctl: Control) {
++  const errors = errorsFor(ctl, await reconcileAll(c.env, ctl.profiles));
++  return { applied: errors.length === 0, errors };
++}
++
++// ───────────────────────────── AP ─────────────────────────────
++
++/** For the console tab and dashboard: no DNS activity here (that is a logged view of its own). */
++export async function webState(env: Env) {
++  const [controls, allow, monitor, requests, grants, filtering, visibility, integrity, incidents] = await Promise.all([
++    listControls(env), listEntries(env, 'allow'), listEntries(env, 'monitor'),
++    env.DB.prepare('SELECT r.*, c.name FROM web_requests r JOIN web_controls c ON c.id = r.control_id ORDER BY r.id DESC LIMIT 50').all().then((r) => r.results),
++    env.DB.prepare('SELECT g.*, c.name FROM web_grants g JOIN web_controls c ON c.id = g.control_id ORDER BY g.id DESC LIMIT 30').all().then((r) => r.results),
++    loadFiltering(env.DB), loadVisibility(env.DB), integrityStatus(env), listIncidents(env),
++  ]);
++  return {
++    configured: nextdnsConfigured(env),
++    profiles: PROFILES.map((p) => ({ code: p, label: PROFILE_LABEL[p], configured: !!profileId(env, p) })),
++    controls, allow, monitor, requests, grants, filtering, visibility, integrity, incidents,
++    categories: CATEGORIES, max_minutes: MAX_GRANT_MIN, lapse_minutes: REQUEST_LAPSE_MIN, rule_from: WEB_CONTROLS_RULE_FROM,
++  };
++}
++export async function apWeb(c: Ctx) { return c.json({ ok: true, ...(await webState(c.env)) }); }
++
++/** GET /api/ap/web/activity?profile=RAY-PIXEL|HOME-ROUTER&from=-24h — a logged view, shaped by the visibility setting. */
++export async function apActivity(c: Ctx) {
++  const profile = String(c.req.query('profile') ?? 'RAY-PIXEL') as ProfileCode;
++  if (!PROFILES.includes(profile)) fail('Profiles are RAY-PIXEL and HOME-ROUTER.');
++  const from = String(c.req.query('from') ?? '-24h');
++  if (!/^-(1|6|24)h$|^-7d$/.test(from)) fail('Window: -1h, -6h, -24h or -7d.');
++  let page;
++  try { page = await activity(c.env, profile, from); } catch (e) { return fail(`Could not read NextDNS: ${(e as Error).message}`, 409); }
++  await appendEvent(c.env.DB, { actor: apActor(c), action: 'ap.web.view', subject: profile, payload: { from, visibility: page.visibility, events: page.events.length } });
++  return c.json({ ok: true, ...page });
++}
++
++/** POST /api/ap/web/control {op: block | allow | reblock | remove | scope, …} */
++export async function controlOp(c: Ctx) {
++  const b = await json(c);
++  const op = String(b.op ?? '');
++  const env = c.env, now = new Date().toISOString();
++  const note = text(b.note, 500) || null;
++  if (op === 'block') {
++    const domain = normalizeDomain(b.domain);
++    if (!domain) fail('Enter a domain, e.g. doordash.com.');
++    const existing = (await listControls(env)).find((x) => x.domains.includes(domain!));
++    if (existing) {
++      if (existing.policy !== 'blocked') {
++        await env.DB.prepare("UPDATE web_controls SET policy = 'blocked', updated_at = ? WHERE id = ?").bind(now, existing.id).run();
++        await appendEvent(env.DB, { actor: apActor(c), action: 'ap.web.block', subject: String(existing.id), payload: { name: existing.name, from: existing.policy, note } });
++      }
++      return c.json({ ok: true, id: existing.id, ...(await applied(c, (await getControl(env, existing.id))!)) });
++    }
++    const name = text(b.name, 80) || domain!;
++    const service = text(b.service, 63).toLowerCase() || null;
++    if (service && !/^[a-z0-9][a-z0-9-]*$/.test(service)) fail('A NextDNS service id looks like "reddit" or "tiktok".');
++    const profiles = profilesOf(b.profiles);
++    const conflict = await conflictFor(env, [domain!], 'deny');
++    if (conflict) fail(conflict, 409);
++    if (await env.DB.prepare('SELECT id FROM web_controls WHERE removed_at IS NULL AND name = ? COLLATE NOCASE').bind(name).first()) fail(`${name} already exists; add the domain to it instead.`, 409);
++    const r = await env.DB.prepare("INSERT INTO web_controls (name, domains, service, profiles, policy, note, created_at, updated_at) VALUES (?, ?, ?, ?, 'blocked', ?, ?, ?)")
++      .bind(name, JSON.stringify([domain]), service, JSON.stringify(profiles), note, now, now).run();
++    const id = Number(r.meta.last_row_id);
++    await appendEvent(env.DB, { actor: apActor(c), action: 'ap.web.block', subject: String(id), payload: { name, domains: [domain], service, profiles, note } });
++    return c.json({ ok: true, id, ...(await applied(c, (await getControl(env, id))!)) });
++  }
++  const ctl = await controlOf(c, b.id);
++  if (op === 'allow' || op === 'reblock') {
++    const policy = op === 'allow' ? 'allowed' : 'blocked';
++    if (policy === 'blocked') { const conflict = await conflictFor(env, ctl.domains, 'deny', ctl.id); if (conflict) fail(conflict, 409); }
++    await env.DB.prepare('UPDATE web_controls SET policy = ?, updated_at = ? WHERE id = ?').bind(policy, now, ctl.id).run();
++    // A temporary grant ends with the standing restriction it was lifting.
++    if (op === 'allow') await endGrant(env, apActor(c), ctl, 'standing restriction lifted');
++    await appendEvent(env.DB, { actor: apActor(c), action: op === 'allow' ? 'ap.web.allow' : 'ap.web.block', subject: String(ctl.id), payload: { name: ctl.name, from: ctl.policy, note } });
++  } else if (op === 'scope') {
++    const domains = (Array.isArray(b.domains) ? b.domains : String(b.domains ?? '').split(/[\s,]+/)).map(normalizeDomain);
++    if (!domains.length || domains.some((d) => !d)) fail('List the domains, one per line.');
++    const unique = [...new Set(domains as string[])];
++    const conflict = await conflictFor(env, unique, 'deny', ctl.id);
++    if (conflict) fail(conflict, 409);
++    const profiles = profilesOf(b.profiles);
++    await env.DB.prepare('UPDATE web_controls SET domains = ?, profiles = ?, updated_at = ? WHERE id = ?').bind(JSON.stringify(unique), JSON.stringify(profiles), now, ctl.id).run();
++    await appendEvent(env.DB, { actor: apActor(c), action: 'ap.web.scope', subject: String(ctl.id), payload: { name: ctl.name, from: { domains: ctl.domains, profiles: ctl.profiles }, to: { domains: unique, profiles }, note } });
++  } else if (op === 'remove') {
++    if (!note || note.length < 5) fail('Say why the control is being removed.');
++    await env.DB.prepare('UPDATE web_controls SET removed_at = ?, updated_at = ? WHERE id = ?').bind(now, now, ctl.id).run();
++    await endGrant(env, apActor(c), ctl, 'control removed');
++    await env.DB.prepare("UPDATE web_requests SET status = 'denied', decided_at = ?, decided_by = ?, decision_note = 'control removed' WHERE control_id = ? AND status = 'pending'").bind(now, apActor(c), ctl.id).run();
++    await appendEvent(env.DB, { actor: apActor(c), action: 'ap.web.remove', subject: String(ctl.id), payload: { name: ctl.name, domains: ctl.domains, note } });
++    const results = await reconcileAll(env, ctl.profiles);
++    return c.json({ ok: true, applied: results.every((r) => r.ok), errors: results.flatMap((r) => r.errors.map((e) => e.message)) });
++  } else fail('Unknown action.');
++  return c.json({ ok: true, ...(await applied(c, (await getControl(env, ctl.id))!)) });
++}
++
++/** POST /api/ap/web/access {op: grant | end, control, minutes?, note?} or {op: approve | deny, request, minutes?, note?} */
++export async function accessOp(c: Ctx) {
++  const b = await json(c);
++  const op = String(b.op ?? '');
++  const env = c.env, actor = apActor(c), now = new Date();
++  const note = text(b.note, 500) || null;
++  if (op === 'approve' || op === 'deny') {
++    const req = await env.DB.prepare("SELECT * FROM web_requests WHERE id = ? AND status = 'pending'").bind(Number(b.request)).first<{ id: number; control_id: number; minutes: number }>();
++    if (!req) fail('That request is no longer waiting for a decision.', 409);
++    const ctl = await controlOf(c, req!.control_id);
++    if (op === 'deny') {
++      await env.DB.prepare("UPDATE web_requests SET status = 'denied', decided_at = ?, decided_by = ?, decision_note = ? WHERE id = ? AND status = 'pending'").bind(now.toISOString(), actor, note, req!.id).run();
++      await appendEvent(env.DB, { actor, action: 'ap.web.request', subject: String(req!.id), payload: { control: ctl.name, decision: 'denied', note } });
++      return c.json({ ok: true });
++    }
++    const minutes = b.minutes == null || b.minutes === '' ? req!.minutes : minutesOf(b.minutes);
++    if (ctl.state !== 'blocked') fail(`${ctl.name} is not blocked right now.`, 409);
++    // Claim it first, so two clicks cannot grant twice.
++    const claim = await env.DB.prepare("UPDATE web_requests SET status = 'approved', decided_at = ?, decided_by = ?, decision_note = ?, approved_minutes = ? WHERE id = ? AND status = 'pending'")
++      .bind(now.toISOString(), actor, note, minutes, req!.id).run();
++    if (!claim.meta.changes) fail('That request is no longer waiting for a decision.', 409);
++    try {
++      const g = await grantAccess(env, actor, ctl, minutes, { requestId: req!.id, requested: req!.minutes, note }, now);
++      await env.DB.prepare('UPDATE web_requests SET grant_id = ? WHERE id = ?').bind(g.id, req!.id).run();
++      await appendEvent(env.DB, { actor, action: 'ap.web.request', subject: String(req!.id), payload: { control: ctl.name, decision: 'approved', minutes, requested: req!.minutes, note } });
++      return c.json({ ok: true, expires_at: g.expires_at });
++    } catch (e) {
++      const failed = await env.DB.prepare('SELECT id FROM web_grants WHERE request_id = ? ORDER BY id DESC LIMIT 1').bind(req!.id).first<number>('id');
++      if (failed) await env.DB.prepare('UPDATE web_requests SET grant_id = ? WHERE id = ?').bind(failed, req!.id).run();
++      // Nothing was granted: release the claim so the AP can decide again.
++      else await env.DB.prepare("UPDATE web_requests SET status = 'pending', decided_at = NULL, decided_by = NULL, decision_note = NULL, approved_minutes = NULL WHERE id = ?").bind(req!.id).run();
++      return fail((e as Error).message, 409);
++    }
++  }
++  const ctl = await controlOf(c, b.control);
++  if (op === 'grant') {
++    const minutes = minutesOf(b.minutes);
++    if (ctl.state !== 'blocked') fail(ctl.state === 'temporarily-allowed' ? `${ctl.name} is already open until ${new Date(ctl.grant!.expires_at).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' })} ET.` : `${ctl.name} is not blocked.`, 409);
++    try {
++      const g = await grantAccess(env, actor, ctl, minutes, { note }, now);
++      return c.json({ ok: true, expires_at: g.expires_at });
++    } catch (e) { return fail((e as Error).message, 409); }
++  }
++  if (op === 'end') {
++    if (!(await endGrant(env, actor, ctl, note, now))) fail(`${ctl.name} has no temporary access to end.`, 409);
++    const g = await env.DB.prepare('SELECT restore FROM web_grants WHERE control_id = ? ORDER BY id DESC LIMIT 1').bind(ctl.id).first<string>('restore');
++    return c.json({ ok: true, applied: g === 'restored' });
++  }
++  return fail('Unknown action.');
++}
++
++/** POST /api/ap/web/list {list: allow | monitor, op: add | remove, domain?, label?, profiles?, id?} */
++export async function listOp(c: Ctx) {
++  const b = await json(c);
++  const list = String(b.list ?? '');
++  if (list !== 'allow' && list !== 'monitor') fail('Allowlist or monitored domains.');
++  const env = c.env, now = new Date().toISOString();
++  if (b.op === 'add') {
++    const domain = normalizeDomain(b.domain);
++    if (!domain) fail('Enter a domain, e.g. wellsfargo.com.');
++    if (list === 'allow') { const conflict = await conflictFor(env, [domain!], 'allow'); if (conflict) fail(conflict, 409); }
++    if (await env.DB.prepare('SELECT id FROM web_lists WHERE list = ? AND domain = ? AND removed_at IS NULL').bind(list, domain).first()) fail(`${domain} is already on the list.`, 409);
++    const profiles = profilesOf(b.profiles);
++    const r = await env.DB.prepare('INSERT INTO web_lists (list, domain, label, profiles, created_at) VALUES (?, ?, ?, ?, ?)').bind(list, domain, text(b.label, 80) || null, JSON.stringify(profiles), now).run();
++    await appendEvent(env.DB, { actor: apActor(c), action: 'ap.web.list', subject: String(r.meta.last_row_id), payload: { list, op: 'add', domain, profiles } });
++  } else if (b.op === 'remove') {
++    const row = await env.DB.prepare('SELECT domain FROM web_lists WHERE id = ? AND list = ? AND removed_at IS NULL').bind(Number(b.id), list).first<string>('domain');
++    if (!row) fail('Not on the list.', 404);
++    await env.DB.prepare('UPDATE web_lists SET removed_at = ? WHERE id = ?').bind(now, Number(b.id)).run();
++    await appendEvent(env.DB, { actor: apActor(c), action: 'ap.web.list', subject: String(b.id), payload: { list, op: 'remove', domain: row } });
++  } else fail('Add or remove.');
++  if (list === 'monitor') return c.json({ ok: true });
++  const results = await reconcileAll(env);
++  return c.json({ ok: true, applied: results.every((r) => r.ok), errors: results.flatMap((r) => r.errors.map((e) => e.message)) });
++}
++
++/** POST /api/ap/web/setting {visibility, reason} or {profile, filtering: {…} | null} */
++export async function settingOp(c: Ctx) {
++  const b = await json(c);
++  const env = c.env;
++  const put = (key: string, value: string) => env.DB.prepare('INSERT INTO site_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind(key, value).run();
++  if (b.visibility !== undefined) {
++    const v = String(b.visibility);
++    if (v !== 'blocked' && v !== 'monitored' && v !== 'all') fail('Blocked events only, monitored domains, or all domains.');
++    const reason = text(b.reason, 500);
++    if (reason.length < 5) fail('Record why the AP’s visibility is changing.');
++    const from = await loadVisibility(env.DB);
++    await put('web_visibility', v);
++    await appendEvent(env.DB, { actor: apActor(c), action: 'ap.web.setting', subject: 'visibility', payload: { from, to: v, reason } });
++    return c.json({ ok: true });
++  }
++  const profile = String(b.profile ?? '') as ProfileCode;
++  if (!PROFILES.includes(profile)) fail('Profiles are RAY-PIXEL and HOME-ROUTER.');
++  let f: Filtering | null = null;
++  if (b.filtering != null) {
++    const src = b.filtering as Record<string, unknown>;
++    f = {};
++    for (const k of ['safeSearch', 'youtubeRestrictedMode', 'blockBypass'] as const) if (typeof src[k] === 'boolean') f[k] = src[k] as boolean;
++    const cats = (src.categories ?? {}) as Record<string, unknown>;
++    f.categories = {};
++    for (const k of CATEGORIES) if (typeof cats[k] === 'boolean') f.categories[k] = cats[k] as boolean;
++  }
++  const all = await loadFiltering(env.DB);
++  const from = all[profile];
++  all[profile] = f;
++  await put('web_filtering', JSON.stringify(all));
++  await appendEvent(env.DB, { actor: apActor(c), action: 'ap.web.setting', subject: `filtering:${profile}`, payload: { from, to: f } });
++  const results = await reconcileAll(env, [profile]);
++  return c.json({ ok: true, applied: results.every((r) => r.ok), errors: results.flatMap((r) => r.errors.map((e) => e.message)) });
++}
++
++/** POST /api/ap/web/incident {id, disposition, note} — only a restored incident can be reviewed. */
++export async function incidentOp(c: Ctx) {
++  const b = await json(c);
++  const disposition = String(b.disposition ?? '') as (typeof REVIEW)[number];
++  if (!REVIEW.includes(disposition)) fail('Choose: technical cause, authorized, acknowledged, or refer for violation review.');
++  const note = text(b.note, 1000);
++  if (note.length < 5) fail('Record the review.');
++  const r = await reviewIncident(c.env, apActor(c), Number(b.id), disposition, note);
++  if (r === 'missing') fail('No such incident.', 404);
++  if (r === 'open') fail('Still ongoing: it can be reviewed once reporting is restored.', 409);
++  if (r === 'done') fail('Already reviewed.', 409);
++  return c.json({ ok: true });
++}
++
++/** POST /api/ap/web/check — run the integrity check now. */
++export async function checkNow(c: Ctx) {
++  const outcome = await webCheck(c.env);
++  await appendEvent(c.env.DB, { actor: apActor(c), action: 'ap.web.check', subject: null, payload: { outcome } });
++  return c.json({ ok: true, outcome });
++}
++
++// ───────────────────────────── participant ─────────────────────────────
++
++/** For the portal: the controls, his requests, monitoring status, and every AP view of his DNS activity. */
++export async function webForMe(env: Env) {
++  const [controls, requests, integrity, incidents, views] = await Promise.all([
++    listControls(env),
++    env.DB.prepare('SELECT r.id, r.minutes, r.reason, r.requested_at, r.status, r.decided_at, r.decision_note, r.approved_minutes, c.name, g.expires_at FROM web_requests r JOIN web_controls c ON c.id = r.control_id LEFT JOIN web_grants g ON g.id = r.grant_id ORDER BY r.id DESC LIMIT 20').all().then((r) => r.results),
++    integrityStatus(env), listIncidents(env, 20),
++    env.DB.prepare("SELECT at, subject, payload FROM events WHERE action = 'ap.web.view' ORDER BY id DESC LIMIT 20").all<{ at: string; subject: string; payload: string }>().then((r) => r.results),
++  ]);
++  return {
++    configured: nextdnsConfigured(env),
++    controls: controls.map((x) => ({ id: x.id, name: x.name, state: x.state, expires_at: x.grant?.expires_at ?? null })),
++    requests, max_minutes: MAX_GRANT_MIN, lapse_minutes: REQUEST_LAPSE_MIN, rule_from: WEB_CONTROLS_RULE_FROM,
++    integrity: { overall: integrity.overall, headline: integrity.headline, components: integrity.components.map((x) => ({ code: x.code, label: x.label, status: x.status })) },
++    // The AP's note stays the AP's; what happened and how it was settled is his to see.
++    incidents: incidents.map((i) => ({ id: i.id, title: i.title, detected_at: i.detected_at, restored_at: i.restored_at, minutes: i.minutes, status: i.status, disposition: i.disposition })),
++    views: views.map((v) => { let p: { from?: string; visibility?: string } = {}; try { p = JSON.parse(v.payload); } catch { /* none */ } return { at: v.at, profile: v.subject, from: p.from ?? null, visibility: p.visibility ?? null }; }),
++  };
++}
++
++/** POST /api/web/request {op: request, control, minutes, reason} or {op: withdraw, id} */
++export async function requestOp(c: Ctx) {
++  const b = await json(c);
++  const env = c.env, now = new Date().toISOString(), actor = `mrb:${c.get('who').email}`;
++  if (b.op === 'withdraw') {
++    const r = await env.DB.prepare("UPDATE web_requests SET status = 'withdrawn', decided_at = ? WHERE id = ? AND status = 'pending'").bind(now, Number(b.id)).run();
++    if (!r.meta.changes) fail('Nothing to withdraw.', 409);
++    await appendEvent(env.DB, { actor, action: 'web.withdrawn', subject: String(b.id), payload: {} });
++    return c.json({ ok: true });
++  }
++  const ctl = await controlOf(c, b.control);
++  if (ctl.state !== 'blocked') fail(`${ctl.name} is not blocked right now.`, 409);
++  const minutes = minutesOf(b.minutes);
++  const reason = text(b.reason, 500);
++  if (reason.length < 5) fail('Give the reason for the request.');
++  if (await env.DB.prepare("SELECT id FROM web_requests WHERE control_id = ? AND status = 'pending'").bind(ctl.id).first()) fail(`A request for ${ctl.name} is already waiting.`, 409);
++  const r = await env.DB.prepare('INSERT INTO web_requests (control_id, minutes, reason, requested_at) VALUES (?, ?, ?, ?)').bind(ctl.id, minutes, reason, now).run();
++  await appendEvent(env.DB, { actor, action: 'web.requested', subject: String(r.meta.last_row_id), payload: { control: ctl.name, minutes } });
++  c.executionCtx.waitUntil(mailAP(env, `ACCESS REQUEST — ${ctl.name} — ${minutesText(minutes)}`,
++    `Service: ${ctl.name}\nRequested duration: ${minutesText(minutes)}\nReason: ${reason}\n\nApprove, approve with a different duration, or deny in the console (Web Controls). Unanswered, it lapses after ${minutesText(REQUEST_LAPSE_MIN)} and the restriction stays.`, 'web-request'));
++  return c.json({ ok: true, id: Number(r.meta.last_row_id) });
++}
++
++/** POST /api/web/check {op: start, app} → a one-time canary; {op: finish, nonce, test} ← what test.nextdns.io said. */
++export async function checkOp(c: Ctx) {
++  const b = await json(c);
++  if (b.op === 'start') {
++    const app = b.app === 'assistant' ? 'assistant' : 'mrb';
++    return c.json({ ok: true, ...(await startCheck(c.env, app)) });
++  }
++  if (b.op === 'finish') {
++    const test = (b.test && typeof b.test === 'object' ? b.test : {}) as Record<string, unknown>;
++    if (!(await finishCheck(c.env, text(b.nonce, 40), test))) fail('That check expired or was already used.', 409);
++    return c.json({ ok: true });
++  }
++  return fail('Unknown action.');
++}
+diff --git a/src/cron/jobs.ts b/src/cron/jobs.ts
+index 0e683ed..e1f5015 100644
+--- a/src/cron/jobs.ts
++++ b/src/cron/jobs.ts
+@@ -19,7 +19,8 @@ import { postDays as postBluesky } from './bluesky';
+ import { assignFromSchedules, exerciseDeadlineWatch } from '../exercise';
+ import { pollSupervision } from './twitch';
+ import { locationHousekeeping, weeklyPlaces } from '../location';
+-import { dailyAt, everyTickBetween, hourly, type Job } from './schedule';
++import { webCheck } from '../webIntegrity';
++import { dailyAt, everyTick, everyTickBetween, hourly, type Job } from './schedule';
+ 
+ const addDays = (iso: string, n: number) => { const d = new Date(`${iso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+ const checkedAtEt = (now: Date) => now.toLocaleString('en-US', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'short' });
+@@ -463,6 +464,8 @@ export const JOBS: Job[] = [
+   { name: 'exception-deadline', slot: hourly, run: (env, now) => exceptionDeadlineWatch(env, now) },
+   { name: 'location-housekeeping', slot: hourly, run: (env, now) => locationHousekeeping(env, now) },
+   { name: 'location-places', slot: dailyAt(4, 0, 55, [1]), run: (env, now) => weeklyPlaces(env, now) },
++  // Web Controls: re-apply the AP's NextDNS policy, end expired access, check monitoring integrity.
++  { name: 'web-check', slot: everyTick, run: (env, now) => webCheck(env, now) },
+   { name: 'milestone-watch', slot: hourly, run: (env, now) => milestoneWatch(env, now) },
+   { name: 'weekly-mrb', slot: dailyAt(9, 0, 55, [1]), run: (env, now) => mrbWeeklyBrief(env, now) },
+   { name: 'weekly-ap', slot: dailyAt(9, 0, 55, [1]), run: (env, now) => apWeeklyReview(env, now) },
+diff --git a/src/cron/schedule.ts b/src/cron/schedule.ts
+index 2cace6a..de4b155 100644
+--- a/src/cron/schedule.ts
++++ b/src/cron/schedule.ts
+@@ -36,6 +36,11 @@ export function hourly(now: Date): string {
+   return `${etDate(now)}T${String(hour).padStart(2, '0')}`;
+ }
+ 
++/** Every 5-minute tick, all day. */
++export function everyTick(now: Date): string {
++  return new Date(Math.floor(now.getTime() / 300_000) * 300_000).toISOString();
++}
++
+ /** Every tick between two Eastern times, slot = the 5-minute tick. */
+ export function everyTickBetween(from: [number, number], to: [number, number]) {
+   return (now: Date): string | null => {
+diff --git a/src/nextdns.ts b/src/nextdns.ts
+new file mode 100644
+index 0000000..b7c18f7
+--- /dev/null
++++ b/src/nextdns.ts
+@@ -0,0 +1,87 @@
++/* NextDNS API client (Web Controls). Server-side only: the key is the NEXTDNS_API_KEY secret, sent in one
++   header to api.nextdns.io and nowhere else, never returned by any route and never in an error message.
++
++   Named operations only — there is deliberately no generic "call this path" function, so no route can
++   pass arbitrary requests through to NextDNS.
++
++   NextDNS API v1 (https://nextdns.github.io/api/). Child arrays (denylist, allowlist, parental-control
++   services and categories) take POST {id, active}, PATCH /:id {active} and DELETE /:id. */
++
++export type ListName = 'denylist' | 'allowlist';
++export interface Entry { id: string; active?: boolean }
++export interface Profile {
++  denylist?: Entry[];
++  allowlist?: Entry[];
++  parentalControl?: { services?: Entry[]; categories?: Entry[]; safeSearch?: boolean; youtubeRestrictedMode?: boolean; blockBypass?: boolean };
++}
++export interface LogEntry {
++  timestamp: string;
++  domain: string;
++  root?: string;
++  status?: string;                    // default | blocked | allowed | error
++  reasons?: { id: string; name?: string }[];
++  device?: { id?: string; name?: string };
++  clientIp?: string;
++}
++
++/** kind 'auth' means NextDNS refused the AP's key: administration is unavailable, not merely slow. */
++export class NextDnsError extends Error {
++  constructor(message: string, readonly kind: 'auth' | 'off' | 'failed') { super(message); }
++}
++
++const BASE = 'https://api.nextdns.io';
++const enc = encodeURIComponent;
++
++export function nextdnsConfigured(env: Env): boolean { return !!env.NEXTDNS_API_KEY; }
++
++async function call<T>(env: Env, method: string, path: string, body?: unknown): Promise<T> {
++  if (!env.NEXTDNS_API_KEY) throw new NextDnsError('NEXTDNS_API_KEY is not set', 'off');
++  let res: Response;
++  try {
++    res = await fetch(`${BASE}${path}`, {
++      method,
++      headers: { 'X-Api-Key': env.NEXTDNS_API_KEY, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
++      body: body === undefined ? undefined : JSON.stringify(body),
++      signal: AbortSignal.timeout(10000),
++    });
++  } catch (e) {
++    throw new NextDnsError(`NextDNS unreachable (${String((e as Error)?.message ?? e)})`, 'failed');
++  }
++  const text = res.status === 204 ? '' : await res.text();
++  let j: { data?: unknown; meta?: unknown; errors?: { code?: string; detail?: string }[] } = {};
++  try { j = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
++  const errors = (j.errors ?? []).map((e) => e.detail || e.code || 'error').join('; ');
++  const where = `${method} ${path.split('?')[0].replace(/\/profiles\/[^/]+/, '/profiles/…')}`;
++  if (res.status === 401 || res.status === 403) throw new NextDnsError(`NextDNS refused the API key (${where})`, 'auth');
++  if (!res.ok || errors) throw new NextDnsError(`NextDNS ${where}: ${errors || `HTTP ${res.status}`}`, 'failed');
++  return j as T;
++}
++
++export async function getProfile(env: Env, profileId: string): Promise<Profile> {
++  return (await call<{ data?: Profile }>(env, 'GET', `/profiles/${enc(profileId)}`)).data ?? {};
++}
++
++type Child = ListName | 'services' | 'categories';
++const childPath = (profileId: string, list: Child) =>
++  `/profiles/${enc(profileId)}/${list === 'services' || list === 'categories' ? `parentalControl/${list}` : list}`;
++
++export const addEntry = (env: Env, profileId: string, list: Child, id: string, active: boolean) =>
++  call(env, 'POST', childPath(profileId, list), { id, active });
++export const setEntry = (env: Env, profileId: string, list: Child, id: string, active: boolean) =>
++  call(env, 'PATCH', `${childPath(profileId, list)}/${enc(id)}`, { active });
++export const removeEntry = (env: Env, profileId: string, list: Child, id: string) =>
++  call(env, 'DELETE', `${childPath(profileId, list)}/${enc(id)}`);
++export const setParentalControl = (env: Env, profileId: string, patch: { safeSearch?: boolean; youtubeRestrictedMode?: boolean; blockBypass?: boolean }) =>
++  call(env, 'PATCH', `/profiles/${enc(profileId)}/parentalControl`, patch);
++
++/** Newest first. limit is 10–1000 in NextDNS. status 'blocked' asks NextDNS for blocked queries only. */
++export async function getLogs(env: Env, profileId: string, q: { from?: string; limit?: number; status?: 'blocked'; search?: string; cursor?: string } = {}) {
++  const p = new URLSearchParams();
++  if (q.from) p.set('from', q.from);
++  p.set('limit', String(Math.min(Math.max(q.limit ?? 100, 10), 1000)));
++  if (q.status) p.set('status', q.status);
++  if (q.search) p.set('search', q.search);
++  if (q.cursor) p.set('cursor', q.cursor);
++  const j = await call<{ data?: LogEntry[]; meta?: { pagination?: { cursor?: string | null } } }>(env, 'GET', `/profiles/${enc(profileId)}/logs?${p}`);
++  return { data: j.data ?? [], cursor: j.meta?.pagination?.cursor ?? null };
++}
+diff --git a/src/rules.ts b/src/rules.ts
+index 7f34e50..a2abbe2 100644
+--- a/src/rules.ts
++++ b/src/rules.ts
+@@ -240,6 +240,11 @@ export const LOCATION_RULE_FROM: string | null = '2026-10-04'; // Amendment 3, c
+ /* Amendment 4 (co-signed): assigned Exercise Routines; a verified miss is a §8 Violation Event (corner time,
+    never extra exercise). Null until the AP posts the co-signed amendment; then the co-signature date. */
+ export const EXERCISE_RULE_FROM: string | null = '2026-10-04'; // Amendment 4, co-signed 2026-10-04 (updates #5)
++/* Web Controls (NextDNS): the AP's filter on the phone and the home network, temporary access, and monitoring
++   integrity. Until an amendment making them a written requirement is co-signed, the controls operate by
++   consent and an interruption is a review item only: no violation can be declared on them. Null until the AP
++   posts the co-signed amendment (proposed wording: README, Web Controls); then its effective date. */
++export const WEB_CONTROLS_RULE_FROM: string | null = null;
+ export const ALL_PHOTO_VIEWS: PhotoView[] = ['wait', 'front', 'left', 'rear', 'right'];
+ export function photoViewsFor(date: string, schedule = PHOTO_SCHEDULE): PhotoView[] {
+   let views = schedule[0].views;
+diff --git a/src/webControls.ts b/src/webControls.ts
+new file mode 100644
+index 0000000..97e4d6a
+--- /dev/null
++++ b/src/webControls.ts
+@@ -0,0 +1,362 @@
++/* Web Controls: the AP's NextDNS policy for RAY-PIXEL (the phone) and HOME-ROUTER (the home network).
++
++   D1 holds what the AP decided; reconcile() makes each NextDNS profile match it. Every change goes through
++   that one step — block, allow, remove, a temporary grant and its end — so:
++   · temporary access ends by itself: an expired grant no longer counts, and the next tick restores the
++     restriction (the AP never has to remember);
++   · it fails closed: a grant counts only while active AND before its expiry, and a grant NextDNS refuses
++     leaves the restriction in place;
++   · a restoration counts only once NextDNS confirms it; until then it is retried and shown as a failure;
++   · a managed entry changed outside the console (in the NextDNS dashboard) is put back and kept as drift.
++
++   DNS is a signal, not proof: a lookup of doordash.com does not show that DoorDash was opened or an order
++   attempted (apps and the phone look things up in the background), and DNS never shows page contents,
++   passwords, balances, transactions or messages. HOME-ROUTER traffic comes from every device on the home
++   network and is never attributed to Micheal Ray Berry personally. */
++import { appendEvent } from './events';
++import { mailAP } from './mail';
++import * as nextdns from './nextdns';
++import { NextDnsError } from './nextdns';
++
++export const PROFILES = ['RAY-PIXEL', 'HOME-ROUTER'] as const;
++export type ProfileCode = (typeof PROFILES)[number];
++export const PROFILE_LABEL: Record<ProfileCode, string> = {
++  'RAY-PIXEL': 'Phone — Android Private DNS (Wi-Fi and cellular)',
++  'HOME-ROUTER': 'Home network — Google Nest Wifi (every device and guest)',
++};
++export const MAX_GRANT_MIN = 240;       // longest temporary access the AP can grant
++export const REQUEST_LAPSE_MIN = 120;   // an unanswered request lapses; the restriction stays
++export const CATEGORIES = ['porn', 'gambling', 'dating', 'piracy', 'social-networks'] as const;
++export type Visibility = 'blocked' | 'monitored' | 'all';
++export interface Filtering { safeSearch?: boolean; youtubeRestrictedMode?: boolean; blockBypass?: boolean; categories?: Partial<Record<(typeof CATEGORIES)[number], boolean>> }
++
++export const SIGNAL_NOTE = 'DNS events are signals, not proof of deliberate use: apps and the phone look up domains in the background. DNS shows domain names only — never page contents, passwords, balances, transactions or messages.';
++export const HOME_NOTE = 'Home network: any device on the home Wi-Fi (computers, TVs, streaming and smart-home devices, guests). Not attributed to Micheal Ray Berry personally.';
++export const PIXEL_NOTE = 'Phone-specific: lookups through the phone’s Private DNS profile, on Wi-Fi and cellular.';
++
++export function profileId(env: Env, p: ProfileCode): string | null {
++  return String((p === 'RAY-PIXEL' ? env.NEXTDNS_PROFILE_PIXEL : env.NEXTDNS_PROFILE_HOME) ?? '').trim() || null;
++}
++
++const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
++/** "https://www.DoorDash.com/x" → "www.doordash.com", or null when it is not a domain. */
++export function normalizeDomain(input: unknown): string | null {
++  const d = String(input ?? '').trim().toLowerCase().replace(/^[a-z]+:\/\//, '').split(/[/?#]/)[0].replace(/:\d+$/, '').replace(/^\*\./, '').replace(/\.$/, '');
++  return DOMAIN_RE.test(d) ? d : null;
++}
++/** NextDNS entries match subdomains: reddit.com covers old.reddit.com. */
++export const covers = (parent: string, child: string) => child === parent || child.endsWith(`.${parent}`);
++const parseList = (s: string | null) => { try { const v = JSON.parse(s ?? '[]'); return Array.isArray(v) ? v.map(String) : []; } catch { return []; } };
++
++// ───────────────────────────── controls ─────────────────────────────
++
++export interface ControlRow { id: number; name: string; domains: string; service: string | null; profiles: string; policy: 'blocked' | 'allowed'; note: string | null; created_at: string; updated_at: string; removed_at: string | null }
++export type ControlState = 'blocked' | 'temporarily-allowed' | 'allowed' | 'removed';
++export interface Control {
++  id: number; name: string; domains: string[]; service: string | null; profiles: ProfileCode[]; policy: 'blocked' | 'allowed';
++  state: ControlState; grant: { id: number; expires_at: string; granted_by: string } | null; note: string | null; updated_at: string;
++}
++
++/** Grants that lift a restriction right now. One past its expiry never counts, even before the tick ends it. */
++async function liveGrants(db: D1Database, now: Date) {
++  const { results } = await db.prepare("SELECT id, control_id, expires_at, granted_by FROM web_grants WHERE status IN ('applying', 'active') AND expires_at > ? ORDER BY expires_at DESC")
++    .bind(now.toISOString()).all<{ id: number; control_id: number; expires_at: string; granted_by: string }>();
++  const m = new Map<number, { id: number; expires_at: string; granted_by: string }>();
++  for (const g of results) if (!m.has(g.control_id)) m.set(g.control_id, { id: g.id, expires_at: g.expires_at, granted_by: g.granted_by });
++  return m;
++}
++
++function view(r: ControlRow, grant?: Control['grant']): Control {
++  const state: ControlState = r.removed_at ? 'removed' : r.policy === 'allowed' ? 'allowed' : grant ? 'temporarily-allowed' : 'blocked';
++  return {
++    id: r.id, name: r.name, domains: parseList(r.domains), service: r.service, profiles: parseList(r.profiles) as ProfileCode[], policy: r.policy,
++    state, grant: state === 'temporarily-allowed' ? grant! : null, note: r.note, updated_at: r.updated_at,
++  };
++}
++
++export async function listControls(env: Env, now = new Date(), withRemoved = false): Promise<Control[]> {
++  const { results } = await env.DB.prepare(`SELECT * FROM web_controls ${withRemoved ? '' : 'WHERE removed_at IS NULL'} ORDER BY name COLLATE NOCASE`).all<ControlRow>();
++  const grants = await liveGrants(env.DB, now);
++  return results.map((r) => view(r, grants.get(r.id)));
++}
++export async function getControl(env: Env, id: number, now = new Date()): Promise<Control | null> {
++  const r = await env.DB.prepare('SELECT * FROM web_controls WHERE id = ?').bind(id).first<ControlRow>();
++  return r ? view(r, (await liveGrants(env.DB, now)).get(r.id)) : null;
++}
++
++export interface ListRow { id: number; list: 'allow' | 'monitor'; domain: string; label: string | null; profiles: string; created_at: string }
++export async function listEntries(env: Env, list: 'allow' | 'monitor') {
++  const { results } = await env.DB.prepare('SELECT id, list, domain, label, profiles, created_at FROM web_lists WHERE list = ? AND removed_at IS NULL ORDER BY domain').bind(list).all<ListRow>();
++  return results.map((r) => ({ ...r, profiles: parseList(r.profiles) as ProfileCode[] }));
++}
++
++/** Why a domain can't be added: NextDNS allowlist entries override the denylist, so the two must never overlap. */
++export async function conflictFor(env: Env, domains: string[], side: 'deny' | 'allow', exceptControl?: number): Promise<string | null> {
++  if (side === 'deny') {
++    for (const a of await listEntries(env, 'allow')) for (const d of domains)
++      if (covers(d, a.domain) || covers(a.domain, d)) return `${d} overlaps the allowlisted ${a.domain}; remove that allowlist entry first.`;
++    for (const c of await listControls(env)) if (c.id !== exceptControl) for (const d of domains)
++      if (c.domains.includes(d)) return `${d} is already part of ${c.name}.`;
++  } else {
++    for (const c of await listControls(env)) for (const cd of c.domains) for (const d of domains)
++      if (covers(cd, d) || covers(d, cd)) return `${d} overlaps ${cd} in ${c.name}; use temporary access instead.`;
++  }
++  return null;
++}
++
++// ───────────────────────────── reconcile ─────────────────────────────
++
++type Managed = 'denylist' | 'allowlist' | 'services';
++export interface Change { list: string; entry: string; from: unknown; to: unknown }
++export interface Reconciled { profile: ProfileCode; ok: boolean; skipped: string | null; changes: Change[]; drift: Change[]; errors: { entry: string; message: string; auth: boolean }[] }
++
++async function desired(env: Env, p: ProfileCode, now: Date) {
++  const want: Record<Managed, Map<string, boolean>> = { denylist: new Map(), allowlist: new Map(), services: new Map() };
++  for (const c of await listControls(env, now)) {
++    if (!c.profiles.includes(p)) continue;
++    const on = c.state === 'blocked';
++    for (const d of c.domains) want.denylist.set(d, (want.denylist.get(d) ?? false) || on);
++    if (c.service) want.services.set(c.service, (want.services.get(c.service) ?? false) || on);
++  }
++  for (const a of await listEntries(env, 'allow')) if (a.profiles.includes(p)) want.allowlist.set(a.domain, true);
++  return want;
++}
++
++export async function loadFiltering(db: D1Database): Promise<Record<ProfileCode, Filtering | null>> {
++  const v = await db.prepare("SELECT value FROM site_state WHERE key = 'web_filtering'").first<string>('value');
++  try { return { 'RAY-PIXEL': null, 'HOME-ROUTER': null, ...(v ? JSON.parse(v) : {}) }; } catch { return { 'RAY-PIXEL': null, 'HOME-ROUTER': null }; }
++}
++
++/** One NextDNS profile → the AP's policy. Never throws for a NextDNS failure; the result says what happened. */
++export async function reconcile(env: Env, p: ProfileCode, now = new Date()): Promise<Reconciled> {
++  const out: Reconciled = { profile: p, ok: true, skipped: null, changes: [], drift: [], errors: [] };
++  const pid = profileId(env, p);
++  if (!pid) return { ...out, ok: false, skipped: `${p} profile id is not set` };
++  if (!nextdns.nextdnsConfigured(env)) return { ...out, ok: false, skipped: 'NEXTDNS_API_KEY is not set' };
++  const fail = (entry: string, e: unknown) => {
++    out.ok = false;
++    out.errors.push({ entry, message: String((e as Error)?.message ?? e), auth: e instanceof NextDnsError && e.kind === 'auth' });
++  };
++  let live: nextdns.Profile;
++  try { live = await nextdns.getProfile(env, pid); } catch (e) { fail('profile', e); return out; }
++
++  const want = await desired(env, p, now);
++  const { results: rows } = await env.DB.prepare('SELECT list, entry, applied FROM web_managed WHERE profile = ?').bind(p).all<{ list: Managed; entry: string; applied: number | null }>();
++  const managed = new Map(rows.map((r) => [`${r.list}:${r.entry}`, r]));
++  const lists: Record<Managed, nextdns.Entry[]> = { denylist: live.denylist ?? [], allowlist: live.allowlist ?? [], services: live.parentalControl?.services ?? [] };
++  const mark = (list: Managed, entry: string, on: boolean) => env.DB.prepare(
++    'INSERT INTO web_managed (profile, list, entry, applied, first_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (profile, list, entry) DO UPDATE SET applied = excluded.applied',
++  ).bind(p, list, entry, on ? 1 : 0, now.toISOString()).run();
++
++  for (const list of ['denylist', 'allowlist', 'services'] as const) {
++    const actual = new Map(lists[list].map((e) => [e.id, e.active !== false]));
++    for (const [entry, on] of want[list]) {
++      const m = managed.get(`${list}:${entry}`);
++      const is = actual.get(entry);
++      // Drift: NextDNS no longer shows what this Worker last confirmed there.
++      if (m && m.applied != null && is !== (m.applied === 1)) out.drift.push({ list, entry, from: is === undefined ? 'removed' : is, to: m.applied === 1 });
++      if (is === on) { if (!m || m.applied !== (on ? 1 : 0)) await mark(list, entry, on); continue; }
++      try {
++        if (is === undefined) {
++          try { await nextdns.addEntry(env, pid, list, entry, on); } catch (e) {
++            // Another tick may have just added it; set its state instead.
++            if (e instanceof NextDnsError && e.kind === 'auth') throw e;
++            await nextdns.setEntry(env, pid, list, entry, on);
++          }
++        } else await nextdns.setEntry(env, pid, list, entry, on);
++        out.changes.push({ list, entry, from: is ?? null, to: on });
++        await mark(list, entry, on);
++      } catch (e) { fail(entry, e); }
++    }
++    // Entries this Worker created that the policy no longer wants.
++    for (const m of rows.filter((r) => r.list === list && !want[list].has(r.entry))) {
++      try {
++        if (actual.has(m.entry)) { await nextdns.removeEntry(env, pid, list, m.entry); out.changes.push({ list, entry: m.entry, from: actual.get(m.entry), to: null }); }
++        await env.DB.prepare('DELETE FROM web_managed WHERE profile = ? AND list = ? AND entry = ?').bind(p, list, m.entry).run();
++      } catch (e) { fail(m.entry, e); }
++    }
++  }
++
++  // Filtering settings the AP manages on this profile (null = left as set in NextDNS).
++  const f = (await loadFiltering(env.DB))[p];
++  if (f) {
++    const appliedKey = `web:filtering-applied:${p}`;
++    const applied: Filtering = JSON.parse((await env.CACHE.get(appliedKey)) ?? '{}');
++    const pc = live.parentalControl ?? {};
++    try {
++      const patch: Record<string, boolean> = {};
++      for (const k of ['safeSearch', 'youtubeRestrictedMode', 'blockBypass'] as const) {
++        if (f[k] === undefined) continue;
++        const is = pc[k] ?? false;
++        if (applied[k] === f[k] && is !== f[k]) out.drift.push({ list: 'settings', entry: k, from: is, to: f[k] });
++        if (is !== f[k]) patch[k] = f[k]!;
++      }
++      if (Object.keys(patch).length) {
++        await nextdns.setParentalControl(env, pid, patch);
++        for (const [k, v] of Object.entries(patch)) out.changes.push({ list: 'settings', entry: k, from: !v, to: v });
++      }
++      const cats = new Map((pc.categories ?? []).map((c) => [c.id, c.active !== false]));
++      for (const [cat, on] of Object.entries(f.categories ?? {})) {
++        if (on === undefined) continue;
++        const is = cats.get(cat);
++        if (applied.categories?.[cat as (typeof CATEGORIES)[number]] === on && is !== on) out.drift.push({ list: 'categories', entry: cat, from: is ?? 'removed', to: on });
++        if (is === on) continue;
++        if (is === undefined) await nextdns.addEntry(env, pid, 'categories', cat, on); else await nextdns.setEntry(env, pid, 'categories', cat, on);
++        out.changes.push({ list: 'categories', entry: cat, from: is ?? null, to: on });
++      }
++      await env.CACHE.put(appliedKey, JSON.stringify(f));
++    } catch (e) { fail('settings', e); }
++  }
++  return out;
++}
++
++export async function reconcileAll(env: Env, profiles: readonly ProfileCode[] = PROFILES, now = new Date()) {
++  const out: Reconciled[] = [];
++  for (const p of profiles) out.push(await reconcile(env, p, now));
++  return out;
++}
++
++/** The failures that concern one control (its entries, or its profiles not being reachable at all). */
++export function errorsFor(c: Pick<Control, 'domains' | 'service' | 'profiles'>, results: Reconciled[]): string[] {
++  const ids = new Set([...c.domains, ...(c.service ? [c.service] : [])]);
++  return results.filter((r) => c.profiles.includes(r.profile)).flatMap((r) => [
++    ...(r.skipped ? [`${r.profile}: ${r.skipped}`] : []),
++    ...r.errors.filter((e) => e.entry === 'profile' || ids.has(e.entry)).map((e) => `${r.profile}: ${e.message}`),
++  ]);
++}
++
++// ───────────────────────────── temporary access ─────────────────────────────
++
++export interface GrantRow { id: number; control_id: number; request_id: number | null; granted_by: string; granted_at: string; minutes: number; expires_at: string; status: string; applied_at: string | null; ended_at: string | null; ended_by: string | null; restore: string | null; restored_at: string | null; last_error: string | null }
++export const minutesText = (m: number) => (m % 60 === 0 ? `${m / 60} hour${m === 60 ? '' : 's'}` : m > 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} minutes`);
++const etClock = (iso: string) => new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }) + ' ET';
++
++/** Lifts a restriction for `minutes`. Throws with the reason when it cannot; then the restriction stays. */
++export async function grantAccess(env: Env, actor: string, c: Control, minutes: number, opts: { requestId?: number; requested?: number; note?: string | null } = {}, now = new Date()): Promise<GrantRow> {
++  // Settle an earlier restoration first: a grant must never stack on an unconfirmed restore.
++  await processRestorations(env, now, c.id);
++  const unsettled = await env.DB.prepare("SELECT id FROM web_grants WHERE control_id = ? AND restore IN ('pending', 'failed')").bind(c.id).first();
++  if (unsettled) throw new Error('The last restriction on this service is not yet confirmed restored in NextDNS. Try again in a minute.');
++  const expires = new Date(now.getTime() + minutes * 60000).toISOString();
++  const r = await env.DB.prepare("INSERT INTO web_grants (control_id, request_id, granted_by, granted_at, minutes, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, 'applying')")
++    .bind(c.id, opts.requestId ?? null, actor, now.toISOString(), minutes, expires).run();
++  const id = Number(r.meta.last_row_id);
++  const errors = errorsFor(c, await reconcileAll(env, c.profiles, now));
++  if (errors.length) {
++    await env.DB.prepare("UPDATE web_grants SET status = 'apply-failed', ended_at = ?, last_error = ? WHERE id = ?").bind(now.toISOString(), errors.join('; '), id).run();
++    await reconcileAll(env, c.profiles, now); // fail closed: put the restriction back everywhere
++    await appendEvent(env.DB, { actor: 'system', action: 'web.grant-failed', subject: String(id), payload: { control: c.name, errors } });
++    throw new Error(`NextDNS did not accept the change, so ${c.name} stays blocked: ${errors.join('; ')}`);
++  }
++  await env.DB.prepare("UPDATE web_grants SET status = 'active', applied_at = ? WHERE id = ? AND status = 'applying'").bind(new Date().toISOString(), id).run();
++  await appendEvent(env.DB, {
++    actor, action: 'ap.web.grant', subject: String(id),
++    payload: { control: c.name, minutes, requested: opts.requested ?? null, expires_at: expires, request: opts.requestId ?? null, note: opts.note || null },
++  });
++  return (await env.DB.prepare('SELECT * FROM web_grants WHERE id = ?').bind(id).first<GrantRow>())!;
++}
++
++/** The AP ends a grant early. */
++export async function endGrant(env: Env, actor: string, c: Control, note: string | null, now = new Date()): Promise<boolean> {
++  const g = await env.DB.prepare("SELECT * FROM web_grants WHERE control_id = ? AND status IN ('applying', 'active') ORDER BY id DESC LIMIT 1").bind(c.id).first<GrantRow>();
++  if (!g) return false;
++  const upd = await env.DB.prepare("UPDATE web_grants SET status = 'ended', ended_at = ?, ended_by = ?, restore = 'pending' WHERE id = ? AND status IN ('applying', 'active')")
++    .bind(now.toISOString(), actor, g.id).run();
++  if (!upd.meta.changes) return false;
++  await appendEvent(env.DB, { actor, action: 'ap.web.end', subject: String(g.id), payload: { control: c.name, expires_at: g.expires_at, note } });
++  await processRestorations(env, now, c.id);
++  return true;
++}
++
++/** Every tick (and the 1-minute tick): end grants that have expired. */
++export async function expireGrants(env: Env, now = new Date()): Promise<number> {
++  const r = await env.DB.prepare("UPDATE web_grants SET status = 'expired', ended_at = expires_at, ended_by = 'system', restore = 'pending' WHERE status IN ('applying', 'active') AND expires_at <= ?")
++    .bind(now.toISOString()).run();
++  return r.meta.changes ?? 0;
++}
++
++/** Push restrictions back for ended grants; record each only once NextDNS confirms it. Safe to repeat. */
++export async function processRestorations(env: Env, now = new Date(), controlId?: number): Promise<{ restored: number; failed: number }> {
++  const { results: pending } = await env.DB.prepare(`SELECT * FROM web_grants WHERE restore IN ('pending', 'failed') ${controlId ? 'AND control_id = ?' : ''} ORDER BY id`)
++    .bind(...(controlId ? [controlId] : [])).all<GrantRow>();
++  if (!pending.length) return { restored: 0, failed: 0 };
++  const controls = new Map<number, Control>();
++  for (const g of pending) if (!controls.has(g.control_id)) controls.set(g.control_id, (await getControl(env, g.control_id, now))!);
++  const results = await reconcileAll(env, [...new Set([...controls.values()].flatMap((c) => c.profiles))] as ProfileCode[], now);
++  let restored = 0, failed = 0;
++  for (const g of pending) {
++    const c = controls.get(g.control_id)!;
++    // A control since allowed or removed by the AP has no restriction to restore.
++    const errors = c.state === 'blocked' ? errorsFor(c, results) : [];
++    if (!errors.length) {
++      await env.DB.prepare("UPDATE web_grants SET restore = 'restored', restored_at = ?, last_error = NULL WHERE id = ?").bind(now.toISOString(), g.id).run();
++      await appendEvent(env.DB, {
++        actor: 'system', action: g.status === 'expired' ? 'web.expired' : 'web.restored', subject: String(g.id),
++        payload: { control: c.name, expires_at: g.expires_at, state: c.state, after_failure: g.restore === 'failed' ? g.last_error : null },
++      });
++      restored++;
++    } else {
++      await env.DB.prepare("UPDATE web_grants SET restore = 'failed', last_error = ? WHERE id = ?").bind(errors.join('; '), g.id).run();
++      if (g.restore !== 'failed') {
++        await appendEvent(env.DB, { actor: 'system', action: 'web.restore-failed', subject: String(g.id), payload: { control: c.name, errors } });
++        await mailAP(env, `RESTRICTION NOT RESTORED — ${c.name}`,
++          `Temporary access to ${c.name} ended at ${etClock(g.ended_at ?? g.expires_at)}, but NextDNS did not accept the restriction:\n${errors.join('\n')}\n\nThe Worker retries every minute. Check the NextDNS account and the console (Web Controls).`, 'web-restore-failed');
++      }
++      failed++;
++    }
++  }
++  return { restored, failed };
++}
++
++export async function lapseRequests(env: Env, now = new Date()): Promise<number> {
++  const cutoff = new Date(now.getTime() - REQUEST_LAPSE_MIN * 60000).toISOString();
++  const { results } = await env.DB.prepare("SELECT r.id, c.name FROM web_requests r JOIN web_controls c ON c.id = r.control_id WHERE r.status = 'pending' AND r.requested_at <= ?").bind(cutoff).all<{ id: number; name: string }>();
++  for (const r of results) {
++    const u = await env.DB.prepare("UPDATE web_requests SET status = 'lapsed', decided_at = ?, decided_by = 'system' WHERE id = ? AND status = 'pending'").bind(now.toISOString(), r.id).run();
++    if (u.meta.changes) await appendEvent(env.DB, { actor: 'system', action: 'web.lapsed', subject: String(r.id), payload: { control: r.name } });
++  }
++  return results.length;
++}
++
++/** The 1-minute tick: temporary access ends on time. Cheap when nothing is due. */
++export async function webMinute(env: Env, now = new Date()): Promise<string> {
++  const expired = await expireGrants(env, now);
++  const pending = await env.DB.prepare("SELECT COUNT(*) AS n FROM web_grants WHERE restore IN ('pending', 'failed')").first<number>('n');
++  if (!expired && !pending) return 'nothing due';
++  const r = await processRestorations(env, now);
++  return `${expired} expired · ${r.restored} restored · ${r.failed} failed`;
++}
++
++// ───────────────────────────── activity ─────────────────────────────
++
++export async function loadVisibility(db: D1Database): Promise<Visibility> {
++  const v = await db.prepare("SELECT value FROM site_state WHERE key = 'web_visibility'").first<string>('value');
++  return v === 'monitored' || v === 'all' ? v : 'blocked';
++}
++
++export interface ActivityEvent { at: string; domain: string; status: string; signal: 'blocked' | 'controlled' | 'monitored' | 'lookup'; matched: string | null; reasons: string[]; device: string | null }
++
++/** DNS activity for one profile, shaped by the AP's visibility setting before anything leaves the Worker.
++    Client IP addresses are dropped. The caller logs the view. */
++export async function activity(env: Env, p: ProfileCode, from: string) {
++  const pid = profileId(env, p);
++  if (!pid) throw new Error(`${p} profile id is not set.`);
++  const mode = await loadVisibility(env.DB);
++  const match = [
++    ...(await listControls(env)).flatMap((c) => c.domains.map((d) => ({ d, label: c.name, kind: 'controlled' as const }))),
++    ...(await listEntries(env, 'monitor')).map((m) => ({ d: m.domain, label: m.label || m.domain, kind: 'monitored' as const })),
++  ];
++  // In the narrowest mode NextDNS is asked for blocked queries only, so nothing else reaches the Worker.
++  const page = await nextdns.getLogs(env, pid, { from, status: mode === 'blocked' ? 'blocked' : undefined, limit: mode === 'monitored' ? 1000 : 200 });
++  const events: ActivityEvent[] = [];
++  for (const e of page.data) {
++    const domain = String(e.domain ?? '').toLowerCase();
++    const m = match.find((x) => covers(x.d, domain));
++    const signal = e.status === 'blocked' ? 'blocked' : m ? m.kind : 'lookup';
++    if (mode === 'blocked' && signal !== 'blocked') continue;
++    if (mode === 'monitored' && signal === 'lookup') continue;
++    events.push({ at: e.timestamp, domain, status: e.status ?? 'default', signal, matched: m?.label ?? null, reasons: (e.reasons ?? []).map((r) => r.name || r.id), device: e.device?.name ?? null });
++    if (events.length >= 200) break;
++  }
++  return { profile: p, heading: p === 'RAY-PIXEL' ? 'RAY-PIXEL ACTIVITY' : 'HOME NETWORK ACTIVITY', attribution: p === 'RAY-PIXEL' ? PIXEL_NOTE : HOME_NOTE, visibility: mode, note: SIGNAL_NOTE, events };
++}
+diff --git a/src/webIntegrity.ts b/src/webIntegrity.ts
+new file mode 100644
+index 0000000..81cbe1f
+--- /dev/null
++++ b/src/webIntegrity.ts
+@@ -0,0 +1,313 @@
++/* Web Controls integrity: the accountability infrastructure is itself monitored.
++
++   Components: NextDNS (the AP's administration), the Pixel profile, the home router, the phone (OwnTracks
++   reports, Location Monitoring), policy enforcement, and the Recording Assistant's DNS check.
++
++   Missing DNS is never treated as a bypass by itself: a sleeping, offline or switched-off phone is
++   DEGRADED. A component is INTERRUPTED only on positive evidence —
++   · NextDNS refuses the AP's API key;
++   · a restriction could not be restored;
++   · a DNS check from the phone's browser reached no NextDNS, or a different profile (test.nextdns.io);
++   · two one-time canary lookups from the phone never reached RAY-PIXEL's log;
++   · the phone is reporting its location over the network while no DNS has reached RAY-PIXEL for an hour.
++   An interruption or a long gap opens an incident; restoration closes the outage but keeps the incident,
++   and only the AP's review settles it. Nothing here is a finding of misconduct or a Violation Event (§8). */
++import { appendEvent } from './events';
++import { mailAP } from './mail';
++import * as nextdns from './nextdns';
++import { trackerConfigured } from './location';
++import { loadGate } from './state';
++import { WEB_CONTROLS_RULE_FROM } from './rules';
++import { profileId, reconcileAll, lapseRequests, processRestorations, expireGrants, type ProfileCode, type Reconciled } from './webControls';
++
++export type Status = 'active' | 'degraded' | 'interrupted' | 'restored' | 'unknown';
++export type Component = 'nextdns' | 'pixel' | 'home' | 'phone' | 'policy' | 'assistant';
++export const COMPONENT_LABEL: Record<Component, string> = {
++  nextdns: 'NextDNS', pixel: 'Pixel profile', home: 'Home router', phone: 'Phone heartbeat', policy: 'Policy enforcement', assistant: 'Recording Assistant',
++};
++export const PIXEL_QUIET_MIN = 30;      // RAY-PIXEL DNS this recent confirms the profile
++export const HOME_QUIET_MIN = 30;       // HOME-ROUTER likewise (TVs and smart devices keep a home network busy)
++export const PHONE_QUIET_MIN = 60;      // an OwnTracks report this recent: the phone is online
++export const SILENT_ONLINE_MIN = 60;    // phone online, yet no RAY-PIXEL DNS this long: Private DNS is not in use
++export const CHECK_FRESH_MIN = 30;      // a browser DNS check this recent is current evidence
++export const CANARY_WAIT_MIN = 10;      // NextDNS logs can lag; a canary is "not seen" only after this
++export const ASSISTANT_READY_HOURS = 26;
++export const REVIEW = ['technical', 'authorized', 'acknowledged', 'referred'] as const;
++export const RULE_TEXT = 'Accountability controls must remain enabled and configured as directed by the Accountability Partner. Micheal Ray Berry may not disable, replace, circumvent, or materially alter an active accountability control without prior AP approval, except when reasonably necessary for safety, emergency access, or essential device recovery. Loss of monitoring does not suspend the underlying accountability requirement.';
++
++const INCIDENTS: Partial<Record<Component, { interrupted: 'interruption' | 'enforcement'; quiet: 'gap' | 'enforcement'; afterMin: number; title: string }>> = {
++  nextdns: { interrupted: 'interruption', quiet: 'gap', afterMin: 30, title: 'NEXTDNS ADMINISTRATION INTERRUPTED' },
++  policy: { interrupted: 'enforcement', quiet: 'enforcement', afterMin: 30, title: 'POLICY ENFORCEMENT FAILURE' },
++  pixel: { interrupted: 'interruption', quiet: 'gap', afterMin: 120, title: 'DNS ACCOUNTABILITY INTERRUPTED — RAY-PIXEL' },
++  home: { interrupted: 'interruption', quiet: 'gap', afterMin: 60, title: 'HOME NETWORK DNS NOT REPORTING' },
++};
++
++const ago = (iso: string | null | undefined, now: Date) => (iso ? (now.getTime() - Date.parse(iso)) / 60000 : Infinity);
++const etTime = (iso: string) => new Date(iso).toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' ET';
++const latest = (...xs: (string | null | undefined)[]) => xs.filter((x): x is string => !!x).sort().at(-1) ?? null;
++
++// ───────────────────────────── phone-side DNS check ─────────────────────────────
++
++const canaryDomain = (env: Env) => String(env.NEXTDNS_CANARY_DOMAIN ?? '').trim().replace(/^\.+|\.+$/g, '');
++
++/** Step 1 (the phone's browser): a one-time hostname to look up. It need not resolve; the lookup is what counts. */
++export async function startCheck(env: Env, app: 'mrb' | 'assistant', now = new Date()) {
++  const nonce = `c${[...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
++  await env.DB.prepare('INSERT INTO web_checks (nonce, app, issued_at) VALUES (?, ?, ?)').bind(nonce, app, now.toISOString()).run();
++  const domain = canaryDomain(env);
++  return { nonce, canary: domain ? `https://${nonce}.${domain}/` : null };
++}
++
++/** Step 2: what test.nextdns.io told the phone. The canary itself is looked for in RAY-PIXEL's log later. */
++export async function finishCheck(env: Env, nonce: string, test: { status?: unknown; profile?: unknown; protocol?: unknown }, now = new Date()): Promise<boolean> {
++  const s = (v: unknown) => (v == null || v === '' ? null : String(v).slice(0, 40));
++  const r = await env.DB.prepare(`UPDATE web_checks SET received_at = ?, test_status = ?, test_profile = ?, test_protocol = ?, canary = ?
++                                  WHERE nonce = ? AND received_at IS NULL AND issued_at > ?`)
++    .bind(now.toISOString(), s(test.status), s(test.profile), s(test.protocol), canaryDomain(env) ? 'pending' : 'skipped', nonce, new Date(now.getTime() - 10 * 60000).toISOString()).run();
++  return r.meta.changes === 1;
++}
++
++/** Look for each pending canary in RAY-PIXEL's NextDNS log: server-side proof the phone's DNS goes there. */
++export async function verifyCanaries(env: Env, now = new Date()): Promise<string> {
++  const pid = profileId(env, 'RAY-PIXEL');
++  if (!pid || !nextdns.nextdnsConfigured(env)) return 'off';
++  const { results } = await env.DB.prepare("SELECT id, nonce, received_at FROM web_checks WHERE canary = 'pending' AND received_at <= ? ORDER BY id LIMIT 10")
++    .bind(new Date(now.getTime() - 60000).toISOString()).all<{ id: number; nonce: string; received_at: string }>();
++  let seen = 0, notSeen = 0;
++  for (const c of results) {
++    try {
++      const page = await nextdns.getLogs(env, pid, { search: c.nonce, from: new Date(Date.parse(c.received_at) - 15 * 60000).toISOString(), limit: 10 });
++      const hit = page.data.some((e) => String(e.domain).toLowerCase().startsWith(`${c.nonce}.`));
++      if (hit || ago(c.received_at, now) >= CANARY_WAIT_MIN) {
++        await env.DB.prepare('UPDATE web_checks SET canary = ?, canary_checked_at = ? WHERE id = ?').bind(hit ? 'seen' : 'not-seen', now.toISOString(), c.id).run();
++        if (hit) seen++; else notSeen++;
++      }
++    } catch { /* left pending; the NextDNS component shows the failure */ }
++  }
++  return `${seen} seen · ${notSeen} not seen`;
++}
++
++// ───────────────────────────── evaluation ─────────────────────────────
++
++export interface CheckRow { app: string; received_at: string; test_status: string | null; test_profile: string | null; canary: string }
++export interface Observed {
++  now: Date;
++  api: { configured: boolean; ok: boolean; auth: boolean; error: string | null };
++  policyErrors: string[];
++  restoreFailures: number;
++  dns: Record<ProfileCode, { configured: boolean; last: string | null; read: boolean }>;
++  pixelId: string | null;
++  phone: { tracker: boolean; last: string | null; conn: string | null };
++  checks: CheckRow[];                 // newest first
++}
++export interface Evaluation { status: Exclude<Status, 'restored'>; detail: string; verified?: string }
++
++/** Observations → status per component. Pure; the rules above live here. */
++export function evaluate(o: Observed): Record<Component, Evaluation> {
++  const { now } = o;
++  const nextdnsE: Evaluation = !o.api.configured ? { status: 'unknown', detail: 'Not set up: the NextDNS key or profile ids are missing.' }
++    : o.api.auth ? { status: 'interrupted', detail: 'NextDNS refused the AP’s API key: the AP cannot administer the filter.' }
++      : !o.api.ok ? { status: 'degraded', detail: `NextDNS did not answer: ${o.api.error ?? 'unknown error'}` }
++        : { status: 'active', detail: 'Administered by the AP.', verified: now.toISOString() };
++
++  const policyE: Evaluation = !o.api.configured ? { status: 'unknown', detail: 'Not set up.' }
++    : o.restoreFailures ? { status: 'interrupted', detail: `${o.restoreFailures} restriction${o.restoreFailures > 1 ? 's' : ''} not restored in NextDNS — retried every minute.` }
++      : o.policyErrors.length ? { status: 'degraded', detail: `Not all of the policy could be applied: ${o.policyErrors.slice(0, 3).join('; ')}` }
++        : o.api.ok ? { status: 'active', detail: 'NextDNS matches the AP’s policy.', verified: now.toISOString() }
++          : { status: 'degraded', detail: 'The policy could not be checked (NextDNS did not answer).' };
++
++  const home = o.dns['HOME-ROUTER'];
++  const homeE: Evaluation = !home.configured ? { status: 'unknown', detail: 'HOME-ROUTER profile id is not set.' }
++    : ago(home.last, now) <= HOME_QUIET_MIN ? { status: 'active', detail: 'Home network DNS is reaching HOME-ROUTER.', verified: home.last! }
++      : { status: 'degraded', detail: home.read ? `No home-network DNS ${home.last ? `since ${etTime(home.last)}` : 'yet'}. Possible causes: the router's DNS changed, the linked IP changed, an internet outage, or simply no activity.` : 'The HOME-ROUTER log could not be read.' };
++
++  const phoneOnline = o.phone.tracker && ago(o.phone.last, now) <= PHONE_QUIET_MIN;
++  const phoneE: Evaluation = !o.phone.tracker ? { status: 'unknown', detail: 'The location tracker is not set up (Location Monitoring).' }
++    : phoneOnline ? { status: 'active', detail: `Online — last location report ${etTime(o.phone.last!)}.`, verified: o.phone.last! }
++      : { status: 'degraded', detail: `No location report ${o.phone.last ? `since ${etTime(o.phone.last)}` : 'yet'}: the phone may be off, asleep, offline, or the tracker stopped.` };
++
++  const pixel = o.dns['RAY-PIXEL'];
++  let pixelE: Evaluation;
++  if (!pixel.configured) pixelE = { status: 'unknown', detail: 'RAY-PIXEL profile id is not set.' };
++  else {
++    const fresh = o.checks.find((c) => ago(c.received_at, now) <= CHECK_FRESH_MIN) ?? null;
++    const resolved = o.checks.filter((c) => c.canary === 'seen' || c.canary === 'not-seen');
++    const seenAt = resolved.find((c) => c.canary === 'seen')?.received_at ?? null;
++    const good = latest(ago(pixel.last, now) <= PIXEL_QUIET_MIN ? pixel.last : null, ago(seenAt, now) <= PHONE_QUIET_MIN ? seenAt : null);
++    let bad: { at: string; why: string } | null = null;
++    if (fresh?.test_status && fresh.test_status !== 'ok') bad = { at: fresh.received_at, why: `A DNS check from the phone reached no NextDNS (test.nextdns.io: "${fresh.test_status}").` };
++    else if (fresh?.test_profile && o.pixelId && fresh.test_profile !== o.pixelId) bad = { at: fresh.received_at, why: `A DNS check from the phone reached NextDNS profile ${fresh.test_profile}, not RAY-PIXEL.` };
++    else if (resolved[0]?.canary === 'not-seen' && resolved[1]?.canary === 'not-seen') bad = { at: resolved[0].received_at, why: 'Two DNS checks from the phone never reached RAY-PIXEL’s log.' };
++    else if (phoneOnline && o.phone.conn !== 'o' && ago(o.phone.last, now) <= 20 && ago(pixel.last, now) >= SILENT_ONLINE_MIN && pixel.read)
++      bad = { at: now.toISOString(), why: `The phone is reporting its location over the network, but no DNS has reached RAY-PIXEL ${pixel.last ? `since ${etTime(pixel.last)}` : 'at all'}. Private DNS may be off or pointed elsewhere.` };
++    pixelE = bad && (!good || bad.at >= good) ? { status: 'interrupted', detail: bad.why }
++      : good ? { status: 'active', detail: 'The phone’s DNS is reaching RAY-PIXEL.', verified: good }
++        : { status: 'degraded', detail: `Not enough information: no recent RAY-PIXEL DNS${pixel.last ? ` (last ${etTime(pixel.last)})` : ''} and no recent check from the phone. The phone may be asleep or offline.` };
++  }
++
++  const a = o.checks.find((c) => c.app === 'assistant') ?? null;
++  const assistantE: Evaluation = !a ? { status: 'unknown', detail: 'No DNS check from the Recording Assistant yet (it runs one each time it opens).' }
++    : ago(a.received_at, now) > ASSISTANT_READY_HOURS * 60 ? { status: 'degraded', detail: `Last check ${etTime(a.received_at)}.` }
++      : a.test_status === 'ok' && a.canary !== 'not-seen' && (!o.pixelId || !a.test_profile || a.test_profile === o.pixelId)
++        ? { status: 'active', detail: `Ready — checked ${etTime(a.received_at)}.`, verified: a.received_at }
++        : { status: 'degraded', detail: `The last check (${etTime(a.received_at)}) did not reach RAY-PIXEL.` };
++
++  return { nextdns: nextdnsE, policy: policyE, pixel: pixelE, home: homeE, phone: phoneE, assistant: assistantE };
++}
++
++// ───────────────────────────── the scheduled check ─────────────────────────────
++
++/** Every 5-minute tick. After an ending (§11) nothing new is collected or checked. */
++export async function webCheck(env: Env, now = new Date()): Promise<string> {
++  const gate = await loadGate(env.DB, now);
++  if (gate.ended) return 'ended';
++  await expireGrants(env, now);
++  await processRestorations(env, now);
++  await lapseRequests(env, now);
++  const configured = nextdns.nextdnsConfigured(env) && !!profileId(env, 'RAY-PIXEL') && !!profileId(env, 'HOME-ROUTER');
++  const results = configured ? await reconcileAll(env, undefined, now) : [];
++  await recordDrift(env, results, now);
++  if (configured) await verifyCanaries(env, now);
++  const evals = evaluate(await observe(env, now, configured, results));
++  await apply(env, evals, now);
++  return (Object.keys(evals) as Component[]).map((k) => `${k} ${evals[k].status}`).join(' · ');
++}
++
++async function lastDns(env: Env, p: ProfileCode, now: Date): Promise<{ last: string | null; read: boolean }> {
++  const key = `web:last-dns:${p}`;
++  const pid = profileId(env, p);
++  let read = false;
++  if (pid && nextdns.nextdnsConfigured(env)) {
++    try {
++      const page = await nextdns.getLogs(env, pid, { limit: 10 });
++      read = true;
++      const t = page.data.map((e) => new Date(e.timestamp).toISOString()).sort().at(-1);
++      const prev = await env.CACHE.get(key);
++      if (t && (!prev || t > prev)) await env.CACHE.put(key, t);
++    } catch { /* read stays false */ }
++  }
++  return { last: await env.CACHE.get(key), read };
++}
++
++async function observe(env: Env, now: Date, configured: boolean, results: Reconciled[]): Promise<Observed> {
++  const errs = results.flatMap((r) => r.errors);
++  const profileErr = errs.find((e) => e.entry === 'profile');
++  const point = await env.DB.prepare('SELECT received_at, conn FROM location_points ORDER BY received_at DESC LIMIT 1').first<{ received_at: string; conn: string | null }>();
++  const { results: checks } = await env.DB.prepare('SELECT app, received_at, test_status, test_profile, canary FROM web_checks WHERE received_at IS NOT NULL ORDER BY received_at DESC LIMIT 10').all<CheckRow>();
++  return {
++    now,
++    api: { configured, ok: configured && !profileErr, auth: errs.some((e) => e.auth), error: profileErr?.message ?? null },
++    policyErrors: errs.filter((e) => e.entry !== 'profile').map((e) => `${e.entry}: ${e.message}`),
++    restoreFailures: (await env.DB.prepare("SELECT COUNT(*) AS n FROM web_grants WHERE restore = 'failed'").first<number>('n')) ?? 0,
++    dns: {
++      'RAY-PIXEL': { configured: !!profileId(env, 'RAY-PIXEL'), ...(await lastDns(env, 'RAY-PIXEL', now)) },
++      'HOME-ROUTER': { configured: !!profileId(env, 'HOME-ROUTER'), ...(await lastDns(env, 'HOME-ROUTER', now)) },
++    },
++    pixelId: profileId(env, 'RAY-PIXEL'),
++    phone: { tracker: await trackerConfigured(env), last: point?.received_at ?? null, conn: point?.conn ?? null },
++    checks,
++  };
++}
++
++async function recordDrift(env: Env, results: Reconciled[], now: Date) {
++  const drifted = results.filter((r) => r.drift.length);
++  if (!drifted.length) return;
++  const corrected = drifted.every((r) => r.ok);
++  const evidence = drifted.map((r) => ({ profile: r.profile, drift: r.drift, corrected: r.ok }));
++  const at = now.toISOString();
++  const r = await env.DB.prepare("INSERT INTO web_incidents (component, kind, title, detected_at, restored_at, minutes, status, evidence) VALUES ('policy', 'drift', ?, ?, ?, ?, ?, ?)")
++    .bind('NEXTDNS CHANGED OUTSIDE THE CONSOLE', at, corrected ? at : null, corrected ? 0 : null, corrected ? 'restored' : 'open', JSON.stringify(evidence)).run();
++  const what = drifted.flatMap((d) => d.drift.map((x) => `${d.profile} ${x.list} ${x.entry}: ${String(x.from)} → ${String(x.to)}`));
++  await appendEvent(env.DB, { actor: 'system', action: 'web.drift', subject: String(r.meta.last_row_id), payload: { changes: what, corrected } });
++  await mailAP(env, 'NEXTDNS CHANGED OUTSIDE THE CONSOLE', `Entries the console manages were changed in NextDNS directly:\n${what.join('\n')}\n\n${corrected ? 'The AP’s policy has been put back.' : 'Putting the policy back FAILED; it is retried every 5 minutes.'} Review it in the console (Web Controls).`, 'web-drift');
++}
++
++async function apply(env: Env, evals: Record<Component, Evaluation>, now: Date) {
++  const at = now.toISOString();
++  const { results: rows } = await env.DB.prepare('SELECT * FROM web_components').all<{ code: Component; status: Status; detail: string | null; verified_at: string | null; since: string | null }>();
++  for (const row of rows) {
++    const e = evals[row.code];
++    if (!e) continue;
++    const policy = INCIDENTS[row.code];
++    if (e.status === 'active') {
++      const { results: open } = await env.DB.prepare("SELECT id, title, detected_at FROM web_incidents WHERE component = ? AND status = 'open'").bind(row.code).all<{ id: number; title: string; detected_at: string }>();
++      for (const i of open) {
++        const minutes = Math.max(0, Math.round((now.getTime() - Date.parse(i.detected_at)) / 60000));
++        await env.DB.prepare("UPDATE web_incidents SET status = 'restored', restored_at = ?, minutes = ? WHERE id = ? AND status = 'open'").bind(at, minutes, i.id).run();
++        await appendEvent(env.DB, { actor: 'system', action: 'web.incident-restored', subject: String(i.id), payload: { title: i.title, minutes } });
++        await mailAP(env, `RESTORED — ${i.title}`, `Detected ${etTime(i.detected_at)} · restored ${etTime(at)} · interruption ${minutes} minutes.\n\nStatus: AP REVIEW REQUIRED. Restoration does not erase the interruption.`, 'web-restored');
++      }
++      const awaiting = await env.DB.prepare("SELECT COUNT(*) AS n FROM web_incidents WHERE component = ? AND status = 'restored'").bind(row.code).first<number>('n');
++      await setComponent(env, row, awaiting ? 'restored' : 'active', e.detail, latest(row.verified_at, e.verified ?? at), row.status === 'active' || row.status === 'restored' ? row.since : at, at);
++      continue;
++    }
++    const since = e.status === row.status ? row.since ?? at : at;
++    await setComponent(env, row, e.status, e.detail, row.verified_at, since, at);
++    // Only a component that has worked at least once can be interrupted; setup is not an outage.
++    if (!policy || !row.verified_at) continue;
++    const { results: open } = await env.DB.prepare("SELECT kind FROM web_incidents WHERE component = ? AND status = 'open' AND kind <> 'drift'").bind(row.code).all<{ kind: string }>();
++    const kinds = new Set(open.map((x) => x.kind));
++    if (e.status === 'interrupted' && !kinds.has(policy.interrupted)) await openIncident(env, row.code, policy.interrupted, policy.title, row.verified_at, at, e.detail);
++    else if (e.status === 'degraded' && !kinds.size && (now.getTime() - Date.parse(since)) / 60000 >= policy.afterMin)
++      await openIncident(env, row.code, policy.quiet, policy.quiet === 'gap' ? `${COMPONENT_LABEL[row.code].toUpperCase()} NOT REPORTING` : policy.title, row.verified_at, since, e.detail);
++  }
++}
++
++async function setComponent(env: Env, row: { code: Component; status: Status }, status: Status, detail: string, verified: string | null, since: string | null, at: string) {
++  await env.DB.prepare('UPDATE web_components SET status = ?, detail = ?, verified_at = ?, since = ?, checked_at = ? WHERE code = ?').bind(status, detail, verified, since, at, row.code).run();
++  // The phone and the assistant come and go with sleep and use; their changes are not audit events.
++  if (status !== row.status && INCIDENTS[row.code]) {
++    await appendEvent(env.DB, { actor: 'system', action: 'web.status', subject: row.code, payload: { from: row.status, to: status, detail } });
++  }
++}
++
++async function openIncident(env: Env, component: Component, kind: string, title: string, verified: string | null, detected: string, detail: string) {
++  const r = await env.DB.prepare('INSERT INTO web_incidents (component, kind, title, last_verified_at, detected_at, evidence) VALUES (?, ?, ?, ?, ?, ?)')
++    .bind(component, kind, title, verified, detected, JSON.stringify({ detail, rule_from: WEB_CONTROLS_RULE_FROM })).run();
++  await appendEvent(env.DB, { actor: 'system', action: 'web.incident', subject: String(r.meta.last_row_id), payload: { component, kind, title, last_verified_at: verified, detected_at: detected, detail } });
++  await mailAP(env, title, `${title}\nLast verified active: ${verified ? etTime(verified) : 'never'}\nFailure detected: ${etTime(detected)}\n\n${detail}\n\n` +
++    'This is a review item, not a finding: missing or interrupted monitoring can have an ordinary technical cause. ' +
++    (WEB_CONTROLS_RULE_FROM ? 'Loss of monitoring does not suspend the underlying requirement.' : 'Web controls are not yet a written requirement (no amendment co-signed).') +
++    ' Review it in the console (Web Controls).', 'web-incident');
++}
++
++// ───────────────────────────── reads and review ─────────────────────────────
++
++export async function integrityStatus(env: Env, now = new Date()) {
++  const { results } = await env.DB.prepare('SELECT code, status, detail, verified_at, since, checked_at FROM web_components').all<{ code: Component; status: Status; detail: string | null; verified_at: string | null; since: string | null; checked_at: string | null }>();
++  const order: Component[] = ['nextdns', 'pixel', 'home', 'phone', 'policy', 'assistant'];
++  const components = order.map((c) => results.find((r) => r.code === c)!).filter(Boolean).map((c) => ({ ...c, label: COMPONENT_LABEL[c.code] }));
++  // The assistant is informational until it has reported once.
++  const counted = components.filter((c) => !(c.code === 'assistant' && c.status === 'unknown'));
++  const has = (s: Status) => counted.some((c) => c.status === s);
++  const overall: Status = has('interrupted') ? 'interrupted' : has('degraded') || has('unknown') ? 'degraded' : has('restored') ? 'restored' : 'active';
++  const counts = await env.DB.prepare("SELECT SUM(status = 'open') AS open, SUM(status = 'restored') AS review FROM web_incidents").first<{ open: number | null; review: number | null }>();
++  return {
++    overall,
++    headline: { interrupted: 'MONITORING INTERRUPTED — AP REVIEW REQUIRED', degraded: 'NOT ALL SYSTEMS REPORTING', restored: 'REPORTING RESTORED — AP REVIEW REQUIRED', active: 'ALL SYSTEMS REPORTING', unknown: 'NOT YET VERIFIED' }[overall],
++    components, open: counts?.open ?? 0, review: counts?.review ?? 0, rule_from: WEB_CONTROLS_RULE_FROM, rule: RULE_TEXT,
++    checked_at: components.map((c) => c.checked_at).filter(Boolean).sort().at(-1) ?? null,
++  };
++}
++
++export interface IncidentRow {
++  id: number; component: Component; kind: string; title: string; last_verified_at: string | null; detected_at: string; restored_at: string | null;
++  minutes: number | null; status: 'open' | 'restored' | 'reviewed'; evidence: string; disposition: string | null; ap_note: string | null; reviewed_at: string | null;
++}
++export async function listIncidents(env: Env, limit = 60) {
++  const { results } = await env.DB.prepare('SELECT * FROM web_incidents ORDER BY detected_at DESC, id DESC LIMIT ?').bind(limit).all<IncidentRow>();
++  return results.map((r) => { let evidence: unknown = {}; try { evidence = JSON.parse(r.evidence); } catch { /* none */ } return { ...r, evidence }; });
++}
++
++/** The AP settles a restored incident. An ongoing one cannot be reviewed; a reviewed one is final. */
++export async function reviewIncident(env: Env, actor: string, id: number, disposition: (typeof REVIEW)[number], note: string, now = new Date()): Promise<'ok' | 'missing' | 'open' | 'done'> {
++  const i = await env.DB.prepare('SELECT status, component, title FROM web_incidents WHERE id = ?').bind(id).first<{ status: string; component: Component; title: string }>();
++  if (!i) return 'missing';
++  if (i.status === 'open') return 'open';
++  if (i.status === 'reviewed') return 'done';
++  await env.DB.prepare("UPDATE web_incidents SET status = 'reviewed', disposition = ?, ap_note = ?, reviewed_at = ? WHERE id = ? AND status = 'restored'").bind(disposition, note, now.toISOString(), id).run();
++  await appendEvent(env.DB, { actor, action: 'ap.web.incident', subject: String(id), payload: { title: i.title, disposition, note } });
++  const left = await env.DB.prepare("SELECT COUNT(*) AS n FROM web_incidents WHERE component = ? AND status = 'restored'").bind(i.component).first<number>('n');
++  if (!left) await env.DB.prepare("UPDATE web_components SET status = 'active' WHERE code = ? AND status = 'restored'").bind(i.component).run();
++  return 'ok';
++}
+diff --git a/src/worker.ts b/src/worker.ts
+index c98993e..1750ad8 100644
+--- a/src/worker.ts
++++ b/src/worker.ts
+@@ -16,6 +16,8 @@ import * as stream from './api/stream';
+ import * as youtube from './api/youtube';
+ import * as exercise from './api/exercise';
+ import * as amendments from './api/amendments';
++import * as web from './api/webControls';
++import { webMinute } from './webControls';
+ import { formConfig, observerReport, subscribe } from './api/public';
+ import { serveSite } from './site';
+ 
+@@ -77,6 +79,7 @@ api.get('/me', async (c) => c.json({
+   fitness: c.get('who').role === 'mrb' ? await google.fitnessSummary(c.env, 7) : null,
+   twitch_title: c.get('who').role === 'mrb' ? await twitchTitle.twitchTitleStatus(c.env) : null,
+   stream: c.get('who').role === 'mrb' ? await stream.streamStatus(c.env) : null,
++  web: c.get('who').role === 'mrb' ? await web.webForMe(c.env) : null,
+   exercise: await exercise.exerciseState(c.env, { days: 14 }),
+   amendments: await amendments.amendmentState(c.env.DB),
+   scale: { configured: !!c.env.WITHINGS_CLIENT_ID, connected: !!(await c.env.CACHE.get('withings:tokens')) },
+@@ -110,6 +113,8 @@ api.post('/exercise/stop', mrbOnly, exercise.safetyStop);
+ api.post('/exercise/routine-accept', mrbOnly, exercise.acceptRoutine);
+ api.post('/amendment', mrbOnly, amendments.decideAmendment);
+ api.post('/amendment/confirm', mrbOnly, amendments.confirmAmendment);
++api.post('/web/request', mrbOnly, web.requestOp);
++api.post('/web/check', mrbOnly, web.checkOp);
+ 
+ // AP endpoints.
+ const apOnly = async (c: filing.Ctx, next: () => Promise<void>) => {
+@@ -137,6 +142,14 @@ api.post('/ap/location/places', apOnly, location.placesOp);
+ api.post('/ap/location/setting', apOnly, location.settingOp);
+ api.post('/ap/exercise', apOnly, exercise.apExercise);
+ api.post('/ap/amendment', apOnly, amendments.apAmendment);
++api.get('/ap/web', apOnly, web.apWeb);
++api.get('/ap/web/activity', apOnly, web.apActivity);
++api.post('/ap/web/control', apOnly, web.controlOp);
++api.post('/ap/web/access', apOnly, web.accessOp);
++api.post('/ap/web/list', apOnly, web.listOp);
++api.post('/ap/web/setting', apOnly, web.settingOp);
++api.post('/ap/web/incident', apOnly, web.incidentOp);
++api.post('/ap/web/check', apOnly, web.checkNow);
+ api.get('/ap/export.csv', apOnly, ap.exportCsv);
+ 
+ api.all('*', (c) => c.json({ ok: false, error: 'Not found.' }, 404));
+@@ -168,6 +181,10 @@ async function protectedApp(c: filing.Ctx, role: 'mrb' | 'ap', name: string) {
+   const res = new Response(upstream.body, upstream);
+   res.headers.set('cache-control', 'no-store');
+   res.headers.set('x-robots-tag', 'noindex, nofollow');
++  // Micheal Ray Berry's pages run the Web Controls DNS check: test.nextdns.io and a one-time canary hostname.
++  const csp = res.headers.get('content-security-policy');
++  const canary = String(c.env.NEXTDNS_CANARY_DOMAIN ?? '').trim();
++  if (csp && role === 'mrb' && canary) res.headers.set('content-security-policy', csp.replace(/connect-src /, `connect-src https://test.nextdns.io https://*.${canary} `));
+   return res;
+ }
+ app.on(['GET', 'HEAD'], '/assistant/*', async (c) => {
+@@ -237,6 +254,13 @@ export async function runScheduled(env: Env, now: Date): Promise<Record<string,
+ export default {
+   fetch: app.fetch,
+   async scheduled(controller, env, ctx) {
++    // The 1-minute trigger only ends temporary web access on time; everything else runs on the 5-minute tick.
++    if (controller.cron === '* * * * *') {
++      ctx.waitUntil(webMinute(env, new Date(controller.scheduledTime)).catch(
++        (error) => console.error(JSON.stringify({ message: 'web minute failed', error: String(error?.stack || error) })),
++      ));
++      return;
++    }
+     ctx.waitUntil(runScheduled(env, new Date(controller.scheduledTime)).then(
+       (outcome) => { if (Object.keys(outcome).length) console.log(JSON.stringify({ message: 'cron', outcome })); },
+       (error) => console.error(JSON.stringify({ message: 'cron failed', cron: controller.cron, error: String(error?.stack || error) })),
+diff --git a/test/fixtures/nextdns.ts b/test/fixtures/nextdns.ts
+new file mode 100644
+index 0000000..13718ec
+--- /dev/null
++++ b/test/fixtures/nextdns.ts
+@@ -0,0 +1,58 @@
++/* A small in-memory NextDNS API for tests: profiles with denylist, allowlist, parental control and logs.
++   Records every call (with the key it carried) and can be told to fail. */
++type Entry = { id: string; active: boolean };
++export interface FakeProfile {
++  denylist: Entry[]; allowlist: Entry[];
++  parentalControl: { services: Entry[]; categories: Entry[]; safeSearch: boolean; youtubeRestrictedMode: boolean; blockBypass: boolean };
++  logs: { timestamp: string; domain: string; status: string; clientIp?: string; device?: { name?: string }; reasons?: { id: string; name: string }[] }[];
++}
++export const NEXTDNS_KEY = 'test-nextdns-key-SECRET';
++
++export class FakeNextDns {
++  profiles = new Map<string, FakeProfile>();
++  calls: { method: string; url: string; key: string | null }[] = [];
++  failWhen: ((method: string, path: string) => number | null) | null = null;
++  constructor(ids: string[]) { for (const id of ids) this.reset(id); }
++  reset(id: string) {
++    this.profiles.set(id, { denylist: [], allowlist: [], parentalControl: { services: [], categories: [], safeSearch: false, youtubeRestrictedMode: false, blockBypass: false }, logs: [] });
++  }
++  p(id: string) { return this.profiles.get(id)!; }
++  deny(id: string, domain: string) { return this.p(id).denylist.find((e) => e.id === domain)?.active; }
++
++  handle(url: URL, init?: RequestInit): Response {
++    const method = (init?.method ?? 'GET').toUpperCase();
++    const key = new Headers(init?.headers).get('X-Api-Key');
++    this.calls.push({ method, url: url.toString(), key });
++    if (key !== NEXTDNS_KEY) return Response.json({ errors: [{ code: 'forbidden' }] }, { status: 403 });
++    const fail = this.failWhen?.(method, url.pathname);
++    if (fail) return Response.json({ errors: [{ code: 'error', detail: `injected ${fail}` }] }, { status: fail });
++    const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
++    const prof = this.profiles.get(parts[1]);
++    if (parts[0] !== 'profiles' || !prof) return Response.json({ errors: [{ code: 'notFound' }] }, { status: 404 });
++    const rest = parts.slice(2);
++    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
++    if (!rest.length && method === 'GET') return Response.json({ data: structuredClone({ ...prof, logs: undefined }) });
++    if (rest[0] === 'logs') {
++      let logs = [...prof.logs].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
++      const q = url.searchParams;
++      if (q.get('status')) logs = logs.filter((l) => l.status === q.get('status'));
++      if (q.get('search')) logs = logs.filter((l) => l.domain.includes(q.get('search')!));
++      const from = q.get('from');
++      if (from && !from.startsWith('-')) logs = logs.filter((l) => l.timestamp >= from);
++      return Response.json({ data: logs.slice(0, Number(q.get('limit') ?? 100)), meta: { pagination: { cursor: null } } });
++    }
++    if (rest[0] === 'parentalControl' && rest.length === 1 && method === 'PATCH') { Object.assign(prof.parentalControl, body); return new Response(null, { status: 204 }); }
++    const list = rest[0] === 'denylist' ? prof.denylist : rest[0] === 'allowlist' ? prof.allowlist
++      : rest[0] === 'parentalControl' && rest[1] === 'services' ? prof.parentalControl.services
++        : rest[0] === 'parentalControl' && rest[1] === 'categories' ? prof.parentalControl.categories : null;
++    const item = rest[0] === 'parentalControl' ? rest[2] : rest[1];
++    if (list && !item && method === 'POST') {
++      if (list.some((e) => e.id === body.id)) return Response.json({ errors: [{ code: 'duplicate' }] }, { status: 400 });
++      list.push({ id: body.id, active: body.active ?? true }); return Response.json({ data: body });
++    }
++    const e = item ? list?.find((x) => x.id === item) : undefined;
++    if (list && item && method === 'PATCH') { if (!e) return Response.json({ errors: [{ code: 'notFound' }] }, { status: 404 }); Object.assign(e, body); return new Response(null, { status: 204 }); }
++    if (list && item && method === 'DELETE') { if (!e) return Response.json({ errors: [{ code: 'notFound' }] }, { status: 404 }); list.splice(list.indexOf(e), 1); return new Response(null, { status: 204 }); }
++    return Response.json({ errors: [{ code: 'unsupported' }] }, { status: 400 });
++  }
++}
+diff --git a/test/worker/webcontrols.test.ts b/test/worker/webcontrols.test.ts
+new file mode 100644
+index 0000000..3058488
+--- /dev/null
++++ b/test/worker/webcontrols.test.ts
+@@ -0,0 +1,410 @@
++import { env, exports } from 'cloudflare:workers';
++import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
++import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
++import worker from '../../src/worker';
++import { covers, getControl, normalizeDomain, processRestorations, reconcileAll, webMinute } from '../../src/webControls';
++import { evaluate, finishCheck, integrityStatus, startCheck, verifyCanaries, webCheck, type Observed } from '../../src/webIntegrity';
++import { WEB_CONTROLS_RULE_FROM } from '../../src/rules';
++import { FakeNextDns, NEXTDNS_KEY } from '../fixtures/nextdns';
++
++const ORIGIN = 'https://michealrayberry.com';
++const TEAM = 'mrb-test.cloudflareaccess.com';
++const MRB = 'michealrayberry@gmail.com';
++const AP = 'ap@michealrayberry.com';
++const PIX = 'pix123', HOME = 'home456';
++// The Worker's own env plus the AP's NextDNS settings (the secret and the two profile ids).
++const E = { ...env, NEXTDNS_API_KEY: NEXTDNS_KEY, NEXTDNS_PROFILE_PIXEL: PIX, NEXTDNS_PROFILE_HOME: HOME } as Env;
++const T = (iso: string) => new Date(iso);
++
++let keys: CryptoKeyPair;
++let jwk: JsonWebKey;
++let sent: { To: string; Subject: string; TextBody: string }[] = [];
++const fake = new FakeNextDns([PIX, HOME]);
++const b64u = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
++const enc = (obj: unknown) => b64u(new TextEncoder().encode(JSON.stringify(obj)));
++async function token(email: string, aud: string) {
++  const now = Math.floor(Date.now() / 1000);
++  const head = enc({ alg: 'RS256', kid: 'k1' });
++  const body = enc({ iss: `https://${TEAM}`, aud: [aud], email, exp: now + 3600, iat: now });
++  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', keys.privateKey, new TextEncoder().encode(`${head}.${body}`));
++  return `${head}.${body}.${b64u(new Uint8Array(sig))}`;
++}
++/** A signed-in call through the Worker with the AP's NextDNS settings in its env. */
++async function call(role: 'mrb' | 'ap' | 'none', path: string, payload?: unknown) {
++  const headers: Record<string, string> = { Origin: ORIGIN, 'content-type': 'application/json' };
++  if (role !== 'none') headers['Cf-Access-Jwt-Assertion'] = role === 'mrb' ? await token(MRB, 'aud-mrb') : await token(AP, 'aud-ap');
++  const ctx = createExecutionContext();
++  const res = await worker.fetch(new Request(`${ORIGIN}${path}`, { method: payload === undefined ? 'GET' : 'POST', headers, body: payload === undefined ? undefined : JSON.stringify(payload) }), E, ctx);
++  await waitOnExecutionContext(ctx);
++  const text = await res.text();
++  return { status: res.status, text, json: JSON.parse(text || '{}') as Record<string, any> };
++}
++const events = async (action: string) => (await env.DB.prepare('SELECT actor, subject, payload FROM events WHERE action = ? ORDER BY id').bind(action).all<{ actor: string; subject: string; payload: string }>()).results;
++const controlByName = async (name: string) => (await call('ap', '/api/ap/web')).json.controls.find((c: { name: string }) => c.name === name);
++
++beforeAll(async () => {
++  keys = await crypto.subtle.generateKey(
++    { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify'],
++  ) as CryptoKeyPair;
++  jwk = await crypto.subtle.exportKey('jwk', keys.publicKey) as JsonWebKey;
++  vi.useFakeTimers({ toFake: ['Date'] });
++  vi.setSystemTime(T('2026-10-06T00:42:00Z')); // 8:42 PM ET
++  const real = globalThis.fetch;
++  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
++    const url = new URL(String(input instanceof Request ? input.url : input));
++    if (url.toString() === `https://${TEAM}/cdn-cgi/access/certs`) return Response.json({ keys: [{ ...jwk, kid: 'k1' }] });
++    if (url.toString() === 'https://api.postmarkapp.com/email') { sent.push(JSON.parse(String(init?.body))); return Response.json({ ErrorCode: 0, MessageID: 'm' }); }
++    if (url.hostname === 'api.nextdns.io') return fake.handle(url, init);
++    return real(input, init);
++  });
++});
++beforeEach(() => { fake.failWhen = null; });
++afterAll(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
++
++describe('helpers', () => {
++  it('normalizes domains and matches subdomains the way NextDNS does', () => {
++    expect(normalizeDomain('https://www.DoorDash.com/store?x=1')).toBe('www.doordash.com');
++    expect(normalizeDomain('*.reddit.com')).toBe('reddit.com');
++    expect(normalizeDomain('not a domain')).toBeNull();
++    expect(covers('reddit.com', 'old.reddit.com')).toBe(true);
++    expect(covers('reddit.com', 'notreddit.com')).toBe(false);
++  });
++  it('is not a written requirement until an amendment is co-signed', () => {
++    expect(WEB_CONTROLS_RULE_FROM).toBeNull();
++  });
++});
++
++describe('who can do what', () => {
++  it('needs a sign-in, keeps AP operations for the AP, and offers no NextDNS passthrough', async () => {
++    expect((await call('none', '/api/ap/web')).status).toBe(401);
++    expect((await call('mrb', '/api/ap/web')).status).toBe(403);
++    expect((await call('mrb', '/api/ap/web/control', { op: 'block', domain: 'x.com' })).status).toBe(403);
++    expect((await call('mrb', '/api/ap/web/activity?profile=RAY-PIXEL')).status).toBe(403);
++    expect((await call('ap', '/api/web/request', { op: 'request', control: 1, minutes: 5, reason: 'abcde' })).status).toBe(403);
++    for (const p of ['/api/ap/web/nextdns/profiles', '/api/ap/nextdns', '/api/ap/web/proxy?path=/profiles']) expect((await call('ap', p)).status).toBe(404);
++  });
++});
++
++describe('policy', () => {
++  it('blocks a domain on both profiles and records it', async () => {
++    const r = await call('ap', '/api/ap/web/control', { op: 'block', domain: 'doordash.com', name: 'DoorDash' });
++    expect(r.json).toMatchObject({ ok: true, applied: true });
++    expect(fake.deny(PIX, 'doordash.com')).toBe(true);
++    expect(fake.deny(HOME, 'doordash.com')).toBe(true);
++    expect((await events('ap.web.block')).at(-1)).toMatchObject({ actor: `ap:${AP}` });
++    expect((await controlByName('DoorDash')).state).toBe('blocked');
++  });
++
++  it('allow deactivates the entry (kept, tracked); block puts it back', async () => {
++    const c = await controlByName('DoorDash');
++    await call('ap', '/api/ap/web/control', { op: 'allow', id: c.id, note: 'weekend' });
++    expect(fake.deny(PIX, 'doordash.com')).toBe(false);
++    await call('ap', '/api/ap/web/control', { op: 'reblock', id: c.id });
++    expect(fake.deny(PIX, 'doordash.com')).toBe(true);
++  });
++
++  it('scopes a control to the phone only and manages a NextDNS service id', async () => {
++    await call('ap', '/api/ap/web/control', { op: 'block', domain: 'tiktok.com', name: 'TikTok', service: 'tiktok', profiles: ['RAY-PIXEL'] });
++    expect(fake.deny(PIX, 'tiktok.com')).toBe(true);
++    expect(fake.deny(HOME, 'tiktok.com')).toBeUndefined();
++    expect(fake.p(PIX).parentalControl.services).toEqual([{ id: 'tiktok', active: true }]);
++  });
++
++  it('refuses allowlist and denylist overlaps either way', async () => {
++    expect((await call('ap', '/api/ap/web/list', { list: 'allow', op: 'add', domain: 'order.doordash.com' })).status).toBe(409);
++    expect((await call('ap', '/api/ap/web/list', { list: 'allow', op: 'add', domain: 'wellsfargo.com' })).json.ok).toBe(true);
++    expect(fake.p(PIX).allowlist).toEqual([{ id: 'wellsfargo.com', active: true }]);
++    expect((await call('ap', '/api/ap/web/control', { op: 'block', domain: 'online.wellsfargo.com' })).status).toBe(409);
++  });
++
++  it('never touches entries made by hand in the NextDNS dashboard', async () => {
++    fake.p(PIX).denylist.push({ id: 'manual.example', active: true });
++    await reconcileAll(E);
++    expect(fake.deny(PIX, 'manual.example')).toBe(true);
++  });
++
++  it('puts back managed entries changed outside the console and keeps it as drift', async () => {
++    fake.p(PIX).denylist.find((e) => e.id === 'doordash.com')!.active = false;
++    sent = [];
++    await webCheck(E, new Date());
++    expect(fake.deny(PIX, 'doordash.com')).toBe(true);
++    const inc = await env.DB.prepare("SELECT * FROM web_incidents WHERE kind = 'drift' ORDER BY id DESC").first<Record<string, any>>();
++    expect(inc).toMatchObject({ status: 'restored', component: 'policy' });
++    expect(JSON.parse(inc!.evidence)[0].drift[0]).toMatchObject({ entry: 'doordash.com', from: false, to: true });
++    expect(sent.some((m) => m.Subject === 'NEXTDNS CHANGED OUTSIDE THE CONSOLE')).toBe(true);
++  });
++
++  it('applies managed filtering settings', async () => {
++    await call('ap', '/api/ap/web/setting', { profile: 'RAY-PIXEL', filtering: { safeSearch: true, youtubeRestrictedMode: true, blockBypass: true, categories: { gambling: true } } });
++    expect(fake.p(PIX).parentalControl).toMatchObject({ safeSearch: true, youtubeRestrictedMode: true, blockBypass: true, categories: [{ id: 'gambling', active: true }] });
++    expect(fake.p(HOME).parentalControl.safeSearch).toBe(false);
++  });
++
++  it('sends the key only to api.nextdns.io and never returns it', async () => {
++    const outputs = [await call('ap', '/api/ap/web'), await call('ap', '/api/ap/state'), await call('mrb', '/api/me')];
++    for (const o of outputs) expect(o.text).not.toContain(NEXTDNS_KEY);
++    expect(fake.calls.length).toBeGreaterThan(0);
++    for (const c of fake.calls) expect(new URL(c.url).hostname).toBe('api.nextdns.io');
++  });
++});
++
++describe('temporary access', () => {
++  it('grants 30 minutes and restores the restriction by itself at expiry (8:42 → 9:12 PM ET)', async () => {
++    vi.setSystemTime(T('2026-10-06T00:42:00Z'));
++    await call('ap', '/api/ap/web/control', { op: 'block', domain: 'reddit.com', name: 'Reddit' });
++    const reddit = await controlByName('Reddit');
++    const g = await call('ap', '/api/ap/web/access', { op: 'grant', control: reddit.id, minutes: 30 });
++    expect(g.json).toMatchObject({ ok: true, expires_at: '2026-10-06T01:12:00.000Z' });
++    expect(fake.deny(PIX, 'reddit.com')).toBe(false);
++    expect((await controlByName('Reddit')).state).toBe('temporarily-allowed');
++    expect(JSON.parse((await events('ap.web.grant')).at(-1)!.payload)).toMatchObject({ control: 'Reddit', minutes: 30 });
++
++    expect(await webMinute(E, T('2026-10-06T01:11:00Z'))).toBe('nothing due');
++    expect(fake.deny(PIX, 'reddit.com')).toBe(false);
++    // Past expiry it no longer counts, even before a tick ends it (fail closed).
++    expect((await getControl(E, reddit.id, T('2026-10-06T01:12:30Z')))!.state).toBe('blocked');
++    expect(await webMinute(E, T('2026-10-06T01:12:00Z'))).toBe('1 expired · 1 restored · 0 failed');
++    expect(fake.deny(PIX, 'reddit.com')).toBe(true);
++    expect(fake.deny(HOME, 'reddit.com')).toBe(true);
++    const expired = (await events('web.expired')).at(-1)!;
++    expect(expired.actor).toBe('system');
++    expect(JSON.parse(expired.payload)).toMatchObject({ control: 'Reddit', state: 'blocked' });
++  });
++
++  it('request → approve with a different duration; one request per service at a time', async () => {
++    vi.setSystemTime(T('2026-10-06T02:00:00Z'));
++    const reddit = await controlByName('Reddit');
++    sent = [];
++    const r = await call('mrb', '/api/web/request', { op: 'request', control: reddit.id, minutes: 30, reason: 'Vendor research for work' });
++    expect(r.json.ok).toBe(true);
++    expect(sent.some((m) => m.Subject === 'ACCESS REQUEST — Reddit — 30 minutes')).toBe(true);
++    expect((await call('mrb', '/api/web/request', { op: 'request', control: reddit.id, minutes: 10, reason: 'again please' })).status).toBe(409);
++    const d = await call('ap', '/api/ap/web/access', { op: 'approve', request: r.json.id, minutes: 15 });
++    expect(d.json).toMatchObject({ ok: true, expires_at: '2026-10-06T02:15:00.000Z' });
++    expect(JSON.parse((await events('ap.web.grant')).at(-1)!.payload)).toMatchObject({ minutes: 15, requested: 30 });
++    // The AP ends it early; the restriction is back at once.
++    expect((await call('ap', '/api/ap/web/access', { op: 'end', control: reddit.id, note: 'time is up' })).json).toMatchObject({ ok: true, applied: true });
++    expect(fake.deny(PIX, 'reddit.com')).toBe(true);
++  });
++
++  it('denies, and lapses an unanswered request without lifting anything', async () => {
++    vi.setSystemTime(T('2026-10-06T03:00:00Z'));
++    const reddit = await controlByName('Reddit');
++    const a = await call('mrb', '/api/web/request', { op: 'request', control: reddit.id, minutes: 30, reason: 'bored tonight' });
++    await call('ap', '/api/ap/web/access', { op: 'deny', request: a.json.id, note: 'Not tonight' });
++    await call('mrb', '/api/web/request', { op: 'request', control: reddit.id, minutes: 30, reason: 'please, really' });
++    await webCheck(E, T('2026-10-06T05:01:00Z'));
++    expect((await env.DB.prepare('SELECT status FROM web_requests ORDER BY id DESC').first<string>('status'))).toBe('lapsed');
++    expect(fake.deny(PIX, 'reddit.com')).toBe(true);
++  });
++
++  it('fails closed when NextDNS refuses the change, and releases the request for a new decision', async () => {
++    vi.setSystemTime(T('2026-10-06T06:00:00Z'));
++    const reddit = await controlByName('Reddit');
++    const req = await call('mrb', '/api/web/request', { op: 'request', control: reddit.id, minutes: 20, reason: 'need it for work' });
++    fake.failWhen = (m, p) => (m === 'PATCH' && p.endsWith('/denylist/reddit.com') ? 500 : null);
++    const r = await call('ap', '/api/ap/web/access', { op: 'approve', request: req.json.id });
++    expect(r.status).toBe(409);
++    expect(r.json.error).toMatch(/stays blocked/);
++    expect(fake.deny(PIX, 'reddit.com')).toBe(true);
++    expect((await controlByName('Reddit')).state).toBe('blocked');
++    // The failed grant is on record and linked; the decision stands as made.
++    const row = await env.DB.prepare('SELECT status, grant_id FROM web_requests WHERE id = ?').bind(req.json.id).first<{ status: string; grant_id: number }>();
++    expect(row!.status).toBe('approved');
++    expect(await env.DB.prepare('SELECT status FROM web_grants WHERE id = ?').bind(row!.grant_id).first<string>('status')).toBe('apply-failed');
++  });
++
++  it('retries a restoration NextDNS refused until it is confirmed, and says so', async () => {
++    vi.setSystemTime(T('2026-10-06T07:00:00Z'));
++    const reddit = await controlByName('Reddit');
++    await call('ap', '/api/ap/web/access', { op: 'grant', control: reddit.id, minutes: 5 });
++    fake.failWhen = (m) => (m === 'PATCH' ? 503 : null);
++    sent = [];
++    expect(await webMinute(E, T('2026-10-06T07:05:00Z'))).toBe('1 expired · 0 restored · 1 failed');
++    expect(sent.some((m) => m.Subject === 'RESTRICTION NOT RESTORED — Reddit')).toBe(true);
++    await webCheck(E, T('2026-10-06T07:05:30Z'));
++    expect((await integrityStatus(E)).components.find((c) => c.code === 'policy')!.status).toBe('interrupted');
++    // No new grant on top of an unconfirmed restore.
++    expect((await call('ap', '/api/ap/web/access', { op: 'grant', control: reddit.id, minutes: 5 })).status).toBe(409);
++    fake.failWhen = null;
++    expect(await webMinute(E, T('2026-10-06T07:06:00Z'))).toBe('0 expired · 1 restored · 0 failed');
++    expect(fake.deny(PIX, 'reddit.com')).toBe(true);
++    expect(JSON.parse((await events('web.expired')).at(-1)!.payload).after_failure).toMatch(/injected 503/);
++  });
++
++  it('the 1-minute cron trigger runs only the web minute', async () => {
++    const ctx = createExecutionContext();
++    await worker.scheduled!({ cron: '* * * * *', scheduledTime: Date.parse('2026-10-06T07:30:00Z'), noRetry() {} } as ScheduledController, E, ctx);
++    await waitOnExecutionContext(ctx);
++    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM job_runs WHERE slot LIKE '2026-10-06T07:30%'").first<number>('n')).toBe(0);
++  });
++});
++
++describe('activity', () => {
++  beforeAll(() => {
++    const t = '2026-10-06T08:00:00.000Z';
++    fake.p(PIX).logs.push(
++      { timestamp: t, domain: 'api.doordash.com', status: 'blocked', clientIp: '203.0.113.9', device: { name: 'Ray Pixel' }, reasons: [{ id: 'denylist', name: 'Denylist' }] },
++      { timestamp: t, domain: 'www.ubereats.com', status: 'default', clientIp: '203.0.113.9' },
++      { timestamp: t, domain: 'wellsfargo.com', status: 'default', clientIp: '203.0.113.9' },
++    );
++    fake.p(HOME).logs.push({ timestamp: t, domain: 'netflix.com', status: 'default' });
++  });
++
++  it('shows blocked events only by default, drops client IPs, and logs the view for Micheal Ray Berry', async () => {
++    vi.setSystemTime(T('2026-10-06T08:30:00Z'));
++    const r = await call('ap', '/api/ap/web/activity?profile=RAY-PIXEL&from=-24h');
++    expect(r.json.visibility).toBe('blocked');
++    expect(r.json.events.map((e: { domain: string }) => e.domain)).toEqual(['api.doordash.com']);
++    expect(r.json.events[0]).toMatchObject({ signal: 'blocked', matched: 'DoorDash' });
++    expect(r.text).not.toContain('203.0.113.9');
++    expect(r.json.note).toMatch(/not proof of deliberate use/);
++    expect(fake.calls.at(-1)!.url).toContain('status=blocked');
++    const me = await call('mrb', '/api/me');
++    expect(me.json.web.views[0]).toMatchObject({ profile: 'RAY-PIXEL', visibility: 'blocked' });
++  });
++
++  it('widens only with a recorded reason; monitored domains add matching lookups, not others', async () => {
++    expect((await call('ap', '/api/ap/web/setting', { visibility: 'monitored' })).status).toBe(400);
++    await call('ap', '/api/ap/web/list', { list: 'monitor', op: 'add', domain: 'ubereats.com', label: 'Uber Eats' });
++    await call('ap', '/api/ap/web/setting', { visibility: 'monitored', reason: 'Agreed at the weekly review' });
++    const r = await call('ap', '/api/ap/web/activity?profile=RAY-PIXEL&from=-24h');
++    expect(r.json.events.map((e: { domain: string }) => e.domain).sort()).toEqual(['api.doordash.com', 'www.ubereats.com']);
++    expect(JSON.parse((await events('ap.web.setting')).at(-1)!.payload)).toMatchObject({ from: 'blocked', to: 'monitored', reason: 'Agreed at the weekly review' });
++  });
++
++  it('labels home-network activity as not his', async () => {
++    await call('ap', '/api/ap/web/setting', { visibility: 'all', reason: 'Consent recorded in writing' });
++    const r = await call('ap', '/api/ap/web/activity?profile=HOME-ROUTER&from=-24h');
++    expect(r.json.heading).toBe('HOME NETWORK ACTIVITY');
++    expect(r.json.attribution).toMatch(/Not attributed to Micheal Ray Berry personally/);
++    expect(r.json.events.map((e: { domain: string }) => e.domain)).toEqual(['netflix.com']);
++  });
++});
++
++describe('integrity rules (missing DNS is not a bypass)', () => {
++  const NOW = T('2026-10-06T12:00:00Z');
++  const ago = (m: number) => new Date(NOW.getTime() - m * 60000).toISOString();
++  const base = (o: Partial<Observed> = {}): Observed => ({
++    now: NOW, api: { configured: true, ok: true, auth: false, error: null }, policyErrors: [], restoreFailures: 0,
++    dns: { 'RAY-PIXEL': { configured: true, last: ago(1), read: true }, 'HOME-ROUTER': { configured: true, last: ago(1), read: true } },
++    pixelId: PIX, phone: { tracker: true, last: ago(2), conn: 'm' }, checks: [], ...o,
++  });
++  const quietPixel = (o: Partial<Observed> = {}) => base({ dns: { 'RAY-PIXEL': { configured: true, last: ago(45), read: true }, 'HOME-ROUTER': { configured: true, last: ago(1), read: true } }, ...o });
++
++  it('all reporting → active', () => {
++    const e = evaluate(base());
++    expect([e.nextdns.status, e.pixel.status, e.home.status, e.phone.status, e.policy.status]).toEqual(['active', 'active', 'active', 'active', 'active']);
++  });
++  it('a quiet phone that is also offline is degraded, never interrupted', () => {
++    const e = evaluate(quietPixel({ phone: { tracker: true, last: ago(300), conn: 'm' } }));
++    expect(e.pixel.status).toBe('degraded');
++    expect(e.phone.status).toBe('degraded');
++  });
++  it('the phone online over the network for an hour with no RAY-PIXEL DNS → interrupted', () => {
++    expect(evaluate(quietPixel()).pixel.status).toBe('degraded'); // 45 min: not yet
++    const e = evaluate(base({ dns: { 'RAY-PIXEL': { configured: true, last: ago(70), read: true }, 'HOME-ROUTER': { configured: true, last: ago(1), read: true } } }));
++    expect(e.pixel).toMatchObject({ status: 'interrupted' });
++    expect(e.pixel.detail).toMatch(/Private DNS may be off/);
++  });
++  it('a DNS check reaching no NextDNS, or another profile, is interrupted', () => {
++    const fresh = { app: 'mrb', received_at: ago(2), test_profile: null, canary: 'pending' };
++    expect(evaluate(quietPixel({ checks: [{ ...fresh, test_status: 'unconfigured' }] })).pixel.status).toBe('interrupted');
++    expect(evaluate(quietPixel({ checks: [{ ...fresh, test_status: 'ok', test_profile: 'zzz999' }] })).pixel.status).toBe('interrupted');
++  });
++  it('two canaries not seen → interrupted; one is not enough', () => {
++    const c = (m: number) => ({ app: 'mrb', received_at: ago(m), test_status: 'ok', test_profile: PIX, canary: 'not-seen' });
++    const off = { phone: { tracker: true, last: ago(300), conn: 'm' } };
++    expect(evaluate(quietPixel({ ...off, checks: [c(40)] })).pixel.status).toBe('degraded');
++    expect(evaluate(quietPixel({ ...off, checks: [c(40), c(90)] })).pixel.status).toBe('interrupted');
++  });
++  it('a refused API key interrupts AP administration; a slow API only degrades it', () => {
++    expect(evaluate(base({ api: { configured: true, ok: false, auth: true, error: 'x' } })).nextdns.status).toBe('interrupted');
++    expect(evaluate(base({ api: { configured: true, ok: false, auth: false, error: 'x' } })).nextdns.status).toBe('degraded');
++  });
++  it('home silence is degraded, with the ordinary causes named', () => {
++    const e = evaluate(base({ dns: { 'RAY-PIXEL': { configured: true, last: ago(1), read: true }, 'HOME-ROUTER': { configured: true, last: ago(90), read: true } } }));
++    expect(e.home.status).toBe('degraded');
++    expect(e.home.detail).toMatch(/internet outage/);
++  });
++});
++
++describe('the phone DNS check and an interruption, end to end', () => {
++  it('a canary from the phone is found in RAY-PIXEL’s log', async () => {
++    const start = await call('mrb', '/api/web/check', { op: 'start', app: 'assistant' });
++    expect(start.json.canary).toBe(`https://${start.json.nonce}.dnscheck.michealrayberry.com/`);
++    expect((await call('mrb', '/api/web/check', { op: 'finish', nonce: start.json.nonce, test: { status: 'ok', profile: PIX, protocol: 'DOT' } })).json.ok).toBe(true);
++    expect((await call('mrb', '/api/web/check', { op: 'finish', nonce: start.json.nonce, test: { status: 'ok' } })).status).toBe(409);
++    fake.p(PIX).logs.push({ timestamp: new Date().toISOString(), domain: `${start.json.nonce}.dnscheck.michealrayberry.com`, status: 'default' });
++    vi.setSystemTime(new Date(Date.now() + 2 * 60000));
++    expect(await verifyCanaries(E)).toBe('1 seen · 0 not seen');
++  });
++
++  it('active → interrupted → restored → reviewed, keeping the interruption', async () => {
++    const dns = (pid: string, at: string) => fake.p(pid).logs.push({ timestamp: at, domain: 'example.com', status: 'default' });
++    // 8:41 PM — verified active.
++    let now = T('2026-10-07T00:41:00Z');
++    vi.setSystemTime(now);
++    dns(PIX, now.toISOString()); dns(HOME, now.toISOString());
++    await webCheck(E, now);
++    expect((await integrityStatus(E)).components.find((c) => c.code === 'pixel')!.status).toBe('active');
++
++    // 8:46 PM — a DNS check from the phone reaches no NextDNS.
++    now = T('2026-10-07T00:46:00Z');
++    vi.setSystemTime(now);
++    dns(HOME, now.toISOString());
++    const s = await startCheck(E, 'mrb', now);
++    await finishCheck(E, s.nonce, { status: 'unconfigured' }, now);
++    sent = [];
++    await webCheck(E, now);
++    const inc = await env.DB.prepare("SELECT * FROM web_incidents WHERE component = 'pixel' ORDER BY id DESC").first<Record<string, any>>();
++    expect(inc).toMatchObject({ kind: 'interruption', status: 'open', last_verified_at: '2026-10-07T00:41:00.000Z', detected_at: '2026-10-07T00:46:00.000Z' });
++    expect(sent.some((m) => m.Subject === 'DNS ACCOUNTABILITY INTERRUPTED — RAY-PIXEL' && /not a finding/.test(m.TextBody))).toBe(true);
++    expect((await integrityStatus(E)).overall).toBe('interrupted');
++    expect((await call('ap', '/api/ap/web/incident', { id: inc!.id, disposition: 'technical', note: 'too early' })).status).toBe(409);
++
++    // 9:03 PM — reporting again.
++    now = T('2026-10-07T01:03:00Z');
++    vi.setSystemTime(now);
++    dns(PIX, now.toISOString()); dns(HOME, now.toISOString());
++    const ok = await startCheck(E, 'mrb', now);
++    await finishCheck(E, ok.nonce, { status: 'ok', profile: PIX }, now);
++    await webCheck(E, now);
++    const back = await env.DB.prepare('SELECT * FROM web_incidents WHERE id = ?').bind(inc!.id).first<Record<string, any>>();
++    expect(back).toMatchObject({ status: 'restored', restored_at: '2026-10-07T01:03:00.000Z', minutes: 17 });
++    const st = await integrityStatus(E);
++    expect(st.components.find((c) => c.code === 'pixel')!.status).toBe('restored');
++    // Still degraded overall here (no location tracker in this test); the review is counted either way.
++    expect(st.review).toBeGreaterThanOrEqual(1);
++
++    // History is kept as recorded.
++    await expect(env.DB.prepare('UPDATE web_incidents SET detected_at = ? WHERE id = ?').bind('2026-10-07T01:00:00Z', inc!.id).run()).rejects.toThrow(/kept as recorded/);
++    await expect(env.DB.prepare('DELETE FROM web_incidents WHERE id = ?').bind(inc!.id).run()).rejects.toThrow(/kept as recorded/);
++
++    expect((await call('ap', '/api/ap/web/incident', { id: inc!.id, disposition: 'referred', note: 'Discuss at the weekly review' })).json.ok).toBe(true);
++    expect((await integrityStatus(E)).components.find((c) => c.code === 'pixel')!.status).toBe('active');
++    await expect(env.DB.prepare("UPDATE web_incidents SET ap_note = 'edited' WHERE id = ?").bind(inc!.id).run()).rejects.toThrow(/kept as recorded/);
++    // He sees what happened and how it was settled, not the AP's note.
++    const me = await call('mrb', '/api/me');
++    const mine = me.json.web.incidents.find((i: { id: number }) => i.id === inc!.id);
++    expect(mine).toMatchObject({ status: 'reviewed', disposition: 'referred', minutes: 17 });
++    expect(mine.ap_note).toBeUndefined();
++  });
++
++  it('opens nothing for a component that has never worked (setup is not an outage)', async () => {
++    const fresh = { ...E, NEXTDNS_PROFILE_HOME: '' } as Env;
++    await processRestorations(fresh);
++    const before = await env.DB.prepare("SELECT COUNT(*) AS n FROM web_incidents WHERE component = 'home'").first<number>('n');
++    await webCheck(fresh, T('2026-10-07T05:00:00Z'));
++    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM web_incidents WHERE component = 'home'").first<number>('n')).toBe(before);
++  });
++});
++
++describe('the MRB portal page', () => {
++  it('lets the phone’s browser reach test.nextdns.io and the canary hostname', async () => {
++    const res = await exports.default.fetch(`${ORIGIN}/mrb/`, { headers: { 'Cf-Access-Jwt-Assertion': await token(MRB, 'aud-mrb') } });
++    expect(res.status).toBe(200);
++    const csp = res.headers.get('content-security-policy');
++    if (csp) expect(csp).toContain('connect-src https://test.nextdns.io https://*.dnscheck.michealrayberry.com ');
++  });
++});
+diff --git a/worker-configuration.d.ts b/worker-configuration.d.ts
+index 2de01b1..666847a 100644
+--- a/worker-configuration.d.ts
++++ b/worker-configuration.d.ts
+@@ -1,5 +1,5 @@
+ /* eslint-disable */
+-// Generated by Wrangler by running `wrangler types --strict-vars=false` (hash: 687c3ba28d28ba1890ac45e88cd27952)
++// Generated by Wrangler by running `wrangler types --strict-vars=false` (hash: 1e86e78f1816058a29b4d9cf81b6a844)
+ // Runtime types generated with workerd@1.20261001.1 2026-08-22 nodejs_compat
+ interface __BaseEnv_Env {
+ 	CACHE: KVNamespace;
+@@ -12,12 +12,17 @@ interface __BaseEnv_Env {
+ 	AP_EMAIL: string;
+ 	MRB_NOTICE_EMAIL: string;
+ 	TWITCH_CHANNEL: string;
++	BLUESKY_HANDLE: string;
+ 	IMAGE_TRANSFORMS: string;
++	INDEXNOW_KEY: string;
+ 	PUBLIC_SUPERVISION_URLS_ENABLED: string;
+ 	TURNSTILE_SITE_KEY: string;
+ 	CF_ACCOUNT_ID: string;
+ 	STREAM_CUSTOMER_CODE: string;
+ 	WITHINGS_DEVICE_ATTRIBS: string;
++	NEXTDNS_PROFILE_PIXEL: string;
++	NEXTDNS_PROFILE_HOME: string;
++	NEXTDNS_CANARY_DOMAIN: string;
+ 	DEV_ACCESS_EMAIL: string;
+ 	ACCESS_AUD_ASSISTANT: string;
+ 	ACCESS_AUD_MRB: string;
+@@ -32,6 +37,7 @@ interface __BaseEnv_Env {
+ 	WITHINGS_CLIENT_SECRET: string;
+ 	GOOGLE_CLIENT_ID: string;
+ 	GOOGLE_CLIENT_SECRET: string;
++	NEXTDNS_API_KEY: string;
+ }
+ declare namespace Cloudflare {
+ 	interface GlobalProps {
+@@ -44,7 +50,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
+ 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
+ };
+ declare namespace NodeJS {
+-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "SITE_ORIGIN" | "ACCESS_TEAM_DOMAIN" | "MRB_EMAIL" | "AP_EMAIL" | "MRB_NOTICE_EMAIL" | "TWITCH_CHANNEL" | "IMAGE_TRANSFORMS" | "PUBLIC_SUPERVISION_URLS_ENABLED" | "TURNSTILE_SITE_KEY" | "CF_ACCOUNT_ID" | "STREAM_CUSTOMER_CODE" | "WITHINGS_DEVICE_ATTRIBS" | "DEV_ACCESS_EMAIL" | "ACCESS_AUD_ASSISTANT" | "ACCESS_AUD_MRB" | "ACCESS_AUD_AP" | "TURNSTILE_SECRET" | "ATTEST_HMAC_KEY" | "STREAM_API_TOKEN" | "POSTMARK_TOKEN" | "TWITCH_CLIENT_ID" | "TWITCH_CLIENT_SECRET" | "WITHINGS_CLIENT_ID" | "WITHINGS_CLIENT_SECRET" | "GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET">> {}
++	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "SITE_ORIGIN" | "ACCESS_TEAM_DOMAIN" | "MRB_EMAIL" | "AP_EMAIL" | "MRB_NOTICE_EMAIL" | "TWITCH_CHANNEL" | "BLUESKY_HANDLE" | "IMAGE_TRANSFORMS" | "INDEXNOW_KEY" | "PUBLIC_SUPERVISION_URLS_ENABLED" | "TURNSTILE_SITE_KEY" | "CF_ACCOUNT_ID" | "STREAM_CUSTOMER_CODE" | "WITHINGS_DEVICE_ATTRIBS" | "NEXTDNS_PROFILE_PIXEL" | "NEXTDNS_PROFILE_HOME" | "NEXTDNS_CANARY_DOMAIN" | "DEV_ACCESS_EMAIL" | "ACCESS_AUD_ASSISTANT" | "ACCESS_AUD_MRB" | "ACCESS_AUD_AP" | "TURNSTILE_SECRET" | "ATTEST_HMAC_KEY" | "STREAM_API_TOKEN" | "POSTMARK_TOKEN" | "TWITCH_CLIENT_ID" | "TWITCH_CLIENT_SECRET" | "WITHINGS_CLIENT_ID" | "WITHINGS_CLIENT_SECRET" | "GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET" | "NEXTDNS_API_KEY">> {}
+ }
+ declare module "*.html" {
+ 	const value: string;
+diff --git a/wrangler.jsonc b/wrangler.jsonc
+index 07b4b88..953d242 100644
+--- a/wrangler.jsonc
++++ b/wrangler.jsonc
+@@ -46,7 +46,8 @@
+ 
+   "triggers": {
+     // One tick; src/cron/schedule.ts runs each job at its Eastern-time slot (DST included).
+-    "crons": ["*/5 * * * *"]
++    // The 1-minute trigger only ends temporary web access on time (src/webControls.ts webMinute).
++    "crons": ["*/5 * * * *", "* * * * *"]
+   },
+ 
+   "vars": {
+@@ -70,7 +71,12 @@
+     "STREAM_CUSTOMER_CODE": "customer-sbx737pkvhyavdz9",
+     // Withings measure attribs that count as the scale: 0 = device, owner known; 1 = device, owner
+     // ambiguous. Manual entries (2, 4) never count (§4).
+-    "WITHINGS_DEVICE_ATTRIBS": "0,1"
++    "WITHINGS_DEVICE_ATTRIBS": "0,1",
++    // Web Controls (NextDNS, the AP's account): the two profile ids. Blank = off. NEXTDNS_API_KEY is a secret.
++    "NEXTDNS_PROFILE_PIXEL": "",
++    "NEXTDNS_PROFILE_HOME": "",
++    // The phone's DNS check looks up <one-time>.<this>; the name need not resolve (NextDNS logs the lookup).
++    "NEXTDNS_CANARY_DOMAIN": "dnscheck.michealrayberry.com"
+   }
+   // Secrets (wrangler secret put):
+   //   ACCESS_AUD_ASSISTANT, ACCESS_AUD_MRB, ACCESS_AUD_AP  Access application audiences
+@@ -82,5 +88,6 @@
+   //   BLUESKY_APP_PASSWORD                     Bluesky app password for BLUESKY_HANDLE (daily posts)
+   //   WITHINGS_CLIENT_ID, WITHINGS_CLIENT_SECRET   Withings API app (scale weight)
+   //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   Google Health API web client (Fitbit sleep and activity, read-only)
++  //   NEXTDNS_API_KEY      the AP's NextDNS API key (Web Controls); never sent to a browser
+   // Local dev: .dev.vars (see .dev.vars.example).
+ }
+-- 
+2.43.0
+

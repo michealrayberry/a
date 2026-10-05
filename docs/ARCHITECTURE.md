@@ -82,3 +82,19 @@ surface is a projection of it.
 - Local storage paths → Cloud Storage with short-lived signed URLs; raw,
   processed, thumbnail, export, and public-media buckets kept separate (§13.3).
 - FCM for the notice/notification schedule already modeled in `notices`.
+
+## Web Controls (NextDNS) — separate AP-owned Worker
+
+NextDNS administration runs in a separate Cloudflare Worker
+(`cloudflare/web-controls/`) owned by the Accountability Partner, so the
+NextDNS API key and the policy store sit outside anything the participant
+administers. It has its own D1 database, a one-minute cron (grant expiry,
+confirmed restoration, integrity checks), Cloudflare Access authentication, and
+an append-only audit log. Everything goes through one idempotent
+desired-state reconcile into NextDNS, which also detects changes made outside
+the portal. Full design: [`NEXTDNS.md`](./NEXTDNS.md).
+
+```
+AP Portal ─▶ Cloudflare Access ─▶ Worker ─▶ NextDNS API (RAY-PIXEL, HOME-ROUTER)
+Phone heartbeat (device token) ─▶ Worker      Cron ─▶ Worker ─▶ D1
+```

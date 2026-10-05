@@ -17,6 +17,25 @@ design**; most is private by default. This notice explains the boundary.
 - **Determinations**: Accountability Partner verifications, deficiency notices,
   violation records, corrections, and the append-only audit trail.
 
+## DNS accountability data (NextDNS Web Controls)
+
+- **What NextDNS sees:** domain names looked up by the Pixel (RAY-PIXEL profile)
+  and by any device on the home network (HOME-ROUTER profile), with time and
+  block status. DNS does **not** reveal page contents, passwords, balances,
+  transactions, card numbers or message contents, although domain names
+  themselves can reveal context.
+- **What the AP sees** depends on an explicit, audited visibility mode:
+  blocked events only (default), monitored domains, or all domains. Client IP
+  addresses are removed before anything reaches the portal. Every AP view of
+  activity is recorded in the audit history, which the participant can read.
+- **Home network** activity is never attributed to Micheal personally; it can
+  come from other devices and guests.
+- **Phone heartbeat** sends only the network type, Android's Private DNS state,
+  the `test.nextdns.io` result and a one-time canary lookup. No location,
+  contacts, messages, camera, microphone or app usage.
+- DNS activity is **never public**. Nothing from Web Controls feeds the public
+  record.
+
 ## What becomes public
 
 Only records the Accountability Partner has **explicitly published**
