@@ -1,0 +1,27 @@
+{
+  "name": "mrb-web-controls-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AP-owned Cloudflare Worker: NextDNS web controls, temporary access, DNS activity, and monitoring integrity for the Micheal Ray Berry Accountability Project.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler d1 migrations apply web-controls-dev --local --env dev && wrangler dev --env dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply web-controls --local",
+    "db:migrate:remote": "wrangler d1 migrations apply web-controls --remote",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261001.1",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.14.0",
+    "better-sqlite3": "^11.3.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

@@ -18,6 +18,12 @@ val apiBaseUrl: String =
         ?: (project.findProperty("CONSOLE_API_BASE_URL") as String?)
         ?: "http://10.0.2.2:3000/" // emulator alias for the local server/ backend (PORT=3000)
 
+/** AP-owned Web Controls Worker (NextDNS integrity heartbeat). Empty = heartbeat disabled. */
+val webControlsBaseUrl: String =
+    (project.findProperty("webControlsBaseUrl") as String?)
+        ?: (project.findProperty("WEB_CONTROLS_BASE_URL") as String?)
+        ?: ""
+
 android {
     namespace = "com.michealrayberry.console"
     compileSdk = 35
@@ -33,6 +39,7 @@ android {
 
         // Surfaced to the app via BuildConfig; consumed by NetworkModule.
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
+        buildConfigField("String", "WEB_CONTROLS_BASE_URL", "\"$webControlsBaseUrl\"")
 
         // Room schema export for migration review under app/schemas/.
         ksp { arg("room.schemaLocation", "$projectDir/schemas") }

@@ -58,10 +58,29 @@ web/
   portal/            AP administration portal (§8)
   participant/       Participant web client (runnable stand-in for the native app)
   integration/       Embeddable status widget for michealrayberry.com (§5.5)
+cloudflare/
+  web-controls/      AP-owned Cloudflare Worker: NextDNS web controls, temporary access,
+                     DNS activity, monitoring integrity (D1, cron, Access) — 53 tests
 android/             Native participant client source (Kotlin/Compose/CameraX/Room/WorkManager)
                      Server-anchored countdown, resumable uploads, guided recording.
                      Not compiled here (no Android SDK) — see android/README.md
 docs/                Architecture, ERD, API, privacy, deployment, guides, checklists
+```
+
+## NextDNS Web Controls
+
+NextDNS is a core accountability control. The AP owns the NextDNS account and
+the Cloudflare Worker that administers it; the API key is a Worker secret that
+never reaches a browser. The AP Portal's **WEB CONTROLS** section provides
+block/allow, temporary access with automatic restoration, DNS activity with an
+AP-selected visibility mode, and a monitoring-integrity dashboard whose
+interruptions are preserved for AP review. Two profiles stay separate:
+**RAY-PIXEL** (Android Private DNS, phone-specific) and **HOME-ROUTER** (Google
+Nest Wifi, never attributed to Micheal personally). See
+[`docs/NEXTDNS.md`](docs/NEXTDNS.md).
+
+```bash
+cd cloudflare/web-controls && npm install && npm test   # 53 tests
 ```
 
 ## Design commitments (enforced, not decorative)
@@ -90,4 +109,5 @@ docs/                Architecture, ERD, API, privacy, deployment, guides, checkl
 [Deployment / backup / restore](docs/DEPLOYMENT.md) ·
 [Participant guide](docs/PARTICIPANT_GUIDE.md) ·
 [AP guide](docs/AP_GUIDE.md) ·
-[Release & Play checklists](docs/RELEASE_CHECKLIST.md)
+[Release & Play checklists](docs/RELEASE_CHECKLIST.md) ·
+[NextDNS Web Controls](docs/NEXTDNS.md)

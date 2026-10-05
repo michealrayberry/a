@@ -3,6 +3,7 @@ package com.michealrayberry.console
 import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.michealrayberry.console.integrity.HeartbeatScheduler
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
@@ -22,6 +23,12 @@ class ProjectConsoleApp : Application(), Configuration.Provider {
 
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
+
+    override fun onCreate() {
+        super.onCreate()
+        // Keep the accountability heartbeat scheduled (no-op until a token is linked).
+        HeartbeatScheduler.schedule(this)
+    }
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
