@@ -45,6 +45,16 @@ through the Apple TV keyboard notification.
   UserDefaults. A 401 on any call signs out and returns to sign-in. Server
   tokens expire after 12 h.
 
+## Compliance gate and parental controls
+
+Today carries a **compliance gate card**. It shows LOCKED until today's
+mandatory evidence is submitted, and a missed or deficient item keeps it locked
+for the rest of the day. Paired with Single App Mode on a supervised Apple TV,
+this makes the TV unusable for anything else until you comply. The gate mode is
+set by managed config or at build time, never from the couch. Setup, the
+Restrictions passcode, kid-safe settings, loopholes and safety are covered in
+**[PARENTAL_CONTROLS.md](PARENTAL_CONTROLS.md)**.
+
 ## Build
 
 Requires Xcode 15.3+ and tvOS 17+ (uses `@Observable`, `ContentUnavailableView`
@@ -82,7 +92,7 @@ tvos/
     App/                          Entry point, root routing, tab shell
     Core/                         Models, APIClient, ServerClock + ISODate, Keychain/settings
     Features/Session/             SessionModel (auth, clock anchor, project zone, refresh)
-    Features/{Login,Today,History,Notices,Board,Settings}/
+    Features/{Login,Today,History,Notices,Board,Settings,Gate}/
     UI/                           Theme (shared palette), StatusBadge, CountdownView
   ProjectConsoleTVTests/
 ```

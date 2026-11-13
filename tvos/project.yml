@@ -28,6 +28,10 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: Connects to the Project Console server on your network.
+        # Compliance gate defaults; a managed app configuration overrides them.
+        # off | manual | autonomous. See tvos/PARENTAL_CONTROLS.md.
+        ComplianceGateMode: manual
+        ComplianceGateLockFrom: "00:00"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.michealrayberry.console.tv

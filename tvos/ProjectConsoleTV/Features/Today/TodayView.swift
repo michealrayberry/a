@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor
 struct TodayView: View {
     @Environment(SessionModel.self) private var session
+    @Environment(GateController.self) private var gate
     @State private var state = LoadState<TodayResponse>()
     @State private var selected: Requirement?
 
@@ -37,6 +38,7 @@ struct TodayView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 48) {
                 header(today)
+                GateCard()
                 if let clock = session.clock, let next = nextDeadline(today) {
                     CountdownView(title: next.title, deadline: next.date, clock: clock, zone: today.timeZone)
                 }
@@ -109,6 +111,7 @@ struct TodayView: View {
             let today = try await session.client().today()
             session.sync(serverTime: today.serverTime, timeZone: today.timeZone)
             state.value = today
+            await gate.update(with: today, serverNow: session.clock?.now() ?? .now)
             state.error = nil
         } catch {
             state.error = session.handle(error)

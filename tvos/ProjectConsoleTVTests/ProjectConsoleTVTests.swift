@@ -104,3 +104,45 @@ final class StatusStyleTests: XCTestCase {
         XCTAssertEqual(StatusStyle("UNDER_REVIEW").label, "Under Review")
     }
 }
+
+final class ComplianceGateTests: XCTestCase {
+    private func req(_ name: String, _ status: String, mandatory: Bool = true) -> Requirement {
+        Requirement(id: name, requirementCode: name, name: name, evidenceType: "VIDEO", mandatory: mandatory ? 1 : 0,
+                    status: status, deadlineAt: "2026-11-14T03:00:59.999Z", grace: nil, submittedAt: nil,
+                    serverReceivedAt: nil, verifiedAt: nil, timeliness: nil)
+    }
+    private let zone = "America/New_York"
+    private let noonET = ISODate.parse("2026-11-13T17:00:00Z")!   // 12:00 PM EST
+
+    func testLockedWhileMandatoryOwed() {
+        let v = ComplianceGate.evaluate(requirements: [req("Video", "NOT_STARTED"), req("Weight", "SUBMITTED")],
+                                        localDate: "2026-11-13", zone: zone, now: noonET, lockFrom: "00:00")
+        XCTAssertEqual(v, .locked(owed: ["Video"], failed: []))
+    }
+
+    func testClearedOnSubmissionNotVerification() {
+        let v = ComplianceGate.evaluate(requirements: [req("Video", "UNDER_REVIEW"), req("Weight", "SUBMITTED"),
+                                                       req("Photo", "NOT_STARTED", mandatory: false)],
+                                        localDate: "2026-11-13", zone: zone, now: noonET, lockFrom: "00:00")
+        XCTAssertEqual(v, .cleared)
+    }
+
+    func testMissingADeadlineNeverUnlocks() {
+        let v = ComplianceGate.evaluate(requirements: [req("Video", "MISSED"), req("Weight", "VERIFIED")],
+                                        localDate: "2026-11-13", zone: zone, now: noonET, lockFrom: "18:00")
+        XCTAssertEqual(v, .locked(owed: [], failed: ["Video"]))
+    }
+
+    func testLockWindowNotStarted() {
+        let v = ComplianceGate.evaluate(requirements: [req("Video", "NOT_STARTED")],
+                                        localDate: "2026-11-13", zone: zone, now: noonET, lockFrom: "18:00")
+        XCTAssertEqual(v, .notYetLocking(startsAt: ISODate.parse("2026-11-13T23:00:00Z")!))  // 6 PM EST
+    }
+
+    func testLockWindowStarted() {
+        let sevenPM = ISODate.parse("2026-11-14T00:00:00Z")!
+        let v = ComplianceGate.evaluate(requirements: [req("Video", "IN_PROGRESS")],
+                                        localDate: "2026-11-13", zone: zone, now: sevenPM, lockFrom: "18:00")
+        XCTAssertTrue(v.isLocked)
+    }
+}

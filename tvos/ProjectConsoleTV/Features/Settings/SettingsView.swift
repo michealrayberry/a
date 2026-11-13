@@ -3,6 +3,7 @@ import SwiftUI
 @MainActor
 struct SettingsView: View {
     @Environment(SessionModel.self) private var session
+    @Environment(GateController.self) private var gate
     let identity: Identity?
 
     @State private var server = AppSettings.serverURLString
@@ -26,6 +27,14 @@ struct SettingsView: View {
                     Label("Plain HTTP is for local development only. Use HTTPS in production.", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(Theme.late)
                 }
+            }
+
+            Section("Compliance gate (read-only)") {
+                LabeledContent("Mode", value: gate.mode.rawValue.capitalized)
+                LabeledContent("Lock window starts", value: GateMode.lockFrom + " project time")
+                LabeledContent("Single App Mode", value: gate.singleAppModeActive ? "Active" : "Not active")
+                Text("The gate is set by the device's management profile or the app build, not here. See tvos/PARENTAL_CONTROLS.md.")
+                    .font(.callout).foregroundStyle(Theme.textSecondary)
             }
 
             Section("Remote controls") {
