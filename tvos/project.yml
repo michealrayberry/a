@@ -1,0 +1,49 @@
+# XcodeGen spec. Generate the Xcode project with:  xcodegen generate
+name: ProjectConsoleTV
+options:
+  bundleIdPrefix: com.michealrayberry
+  deploymentTarget:
+    tvOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"   # requires Xcode 15.3+ (Swift 5.10 compiler)
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_STRICT_CONCURRENCY: complete
+targets:
+  ProjectConsoleTV:
+    type: application
+    platform: tvOS
+    sources:
+      - ProjectConsoleTV
+    info:
+      path: ProjectConsoleTV/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Project Console
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        # Dev only: lets the app reach the reference server over plain HTTP on
+        # localhost / the LAN. Production must use HTTPS — see tvos/README.md.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: Connects to the Project Console server on your network.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.michealrayberry.console.tv
+        TARGETED_DEVICE_FAMILY: "3"
+  ProjectConsoleTVTests:
+    type: bundle.unit-test
+    platform: tvOS
+    sources:
+      - ProjectConsoleTVTests
+    dependencies:
+      - target: ProjectConsoleTV
+schemes:
+  ProjectConsoleTV:
+    build:
+      targets:
+        ProjectConsoleTV: all
+    test:
+      targets:
+        - ProjectConsoleTVTests

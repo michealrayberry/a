@@ -61,6 +61,9 @@ web/
 android/             Native participant client source (Kotlin/Compose/CameraX/Room/WorkManager)
                      Server-anchored countdown, resumable uploads, guided recording.
                      Not compiled here (no Android SDK) — see android/README.md
+tvos/                Native Apple TV client source (SwiftUI): Today countdown, history,
+                     notices, public board, Siri Remote controls. Not compiled here
+                     (no Xcode) — see tvos/README.md
 docs/                Architecture, ERD, API, privacy, deployment, guides, checklists
 ```
 

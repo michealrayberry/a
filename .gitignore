@@ -28,3 +28,9 @@ android/captures/
 
 # OS
 .DS_Store
+
+# tvOS / Xcode (project is generated from tvos/project.yml)
+tvos/*.xcodeproj/
+tvos/ProjectConsoleTV/Resources/Info.plist
+xcuserdata/
+DerivedData/
